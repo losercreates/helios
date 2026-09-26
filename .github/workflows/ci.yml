@@ -1,0 +1,92 @@
+name: Helios CI
+
+on:
+  push:
+    branches: [ main, master, '001-*' ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  build-and-test:
+    name: Build & Test (${{ matrix.compiler }}, ${{ matrix.build_type }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        compiler: [gcc-11, clang-13]
+        build_type: [Debug, Release]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build liburing-dev
+
+      - name: Setup Compiler
+        run: |
+          if [ "${{ matrix.compiler }}" = "gcc-11" ]; then
+            echo "CC=gcc-11" >> $GITHUB_ENV
+            echo "CXX=g++-11" >> $GITHUB_ENV
+          else
+            echo "CC=clang-13" >> $GITHUB_ENV
+            echo "CXX=clang++-13" >> $GITHUB_ENV
+          fi
+
+      - name: Configure CMake
+        run: |
+          cmake -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DHELIOS_BUILD_TESTS=ON \
+            -DHELIOS_BUILD_BENCHMARKS=ON
+
+      - name: Build Project
+        run: |
+          cmake --build build --parallel
+
+      - name: Run Tests (CTest)
+        run: |
+          ctest --test-dir build --output-on-failure
+
+  sanitizer-verification:
+    name: Sanitizers (${{ matrix.sanitizer }})
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [ASAN_UBSAN, TSAN]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install System Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake ninja-build clang liburing-dev
+
+      - name: Configure CMake with Sanitizers
+        env:
+          CC: clang
+          CXX: clang++
+        run: |
+          if [ "${{ matrix.sanitizer }}" = "ASAN_UBSAN" ]; then
+            cmake -B build-sanitizer -G Ninja \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DHELIOS_ENABLE_ASAN=ON \
+              -DHELIOS_ENABLE_UBSAN=ON
+          else
+            cmake -B build-sanitizer -G Ninja \
+              -DCMAKE_BUILD_TYPE=Debug \
+              -DHELIOS_ENABLE_TSAN=ON
+          fi
+
+      - name: Build Project
+        run: |
+          cmake --build build-sanitizer --parallel
+
+      - name: Run Tests with Sanitizers
+        run: |
+          ctest --test-dir build-sanitizer --output-on-failure

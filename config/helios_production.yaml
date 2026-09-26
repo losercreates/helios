@@ -1,0 +1,36 @@
+# Helios Production Configuration (Multi-Worker Thread-per-Core)
+server:
+  host: "0.0.0.0"
+  port: 443
+  workers: 0 # 0 auto-detects CPU count
+  max_connections: 50000
+  buffer_pool_blocks: 8192
+  buffer_block_size: 16384
+
+backend_pools:
+  - name: "web_backends"
+    algorithm: "weighted_round_robin"
+    endpoints:
+      - host: "10.0.1.10"
+        port: 8080
+        weight: 3
+      - host: "10.0.1.11"
+        port: 8080
+        weight: 2
+
+timeouts:
+  idle_timeout_ms: 60000
+  header_read_timeout_ms: 5000
+  connect_timeout_ms: 2000
+  half_close_fallback_ms: 5000
+
+health_check:
+  enabled: true
+  interval_ms: 5000
+  timeout_ms: 1000
+  unhealthy_threshold: 3
+  healthy_threshold: 2
+
+metrics:
+  enabled: true
+  port: 9090

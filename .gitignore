@@ -1,0 +1,43 @@
+# Build and Output Directories
+build/
+build-*/
+bin/
+obj/
+out/
+cmake-build-*/
+
+# Compiled binaries and libraries
+*.o
+*.obj
+*.so
+*.dylib
+*.a
+*.lib
+*.exe
+*.dll
+
+# CMake / Tooling generated files
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+Testing/
+Makefile
+cmake_install.cmake
+install_manifest.txt
+compile_commands.json
+.cache/
+CMakeUserPresets.json
+
+# IDEs and Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs and environment
+*.log
+.env*

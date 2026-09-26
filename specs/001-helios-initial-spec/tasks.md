@@ -12,9 +12,9 @@
 
 **Purpose**: Project initialization and basic structure
 
-- [ ] T001 Initialize CMake project build system with C++20 compiler flags (`-Wall -Wextra -Werror -Wpedantic`) in `CMakeLists.txt`
-- [ ] T002 [P] Create module directory structure (`src/io`, `src/net`, `src/buffer`, `src/http`, `src/lb`, `src/backend`, `src/health`, `src/config`, `src/metrics`, `tests/unit`, `tests/integration`, `tests/benchmarks`, `fuzz`) per plan
-- [ ] T003 [P] Configure GoogleTest, Google Benchmark, and Clang sanitizers (ASan, UBSan, TSan) in `CMakeLists.txt`
+- [x] T001 Initialize CMake project build system with C++20 compiler flags (`-Wall -Wextra -Werror -Wpedantic`) in `CMakeLists.txt`
+- [x] T002 [P] Create module directory structure (`src/io`, `src/net`, `src/buffer`, `src/http`, `src/lb`, `src/backend`, `src/health`, `src/config`, `src/metrics`, `tests/unit`, `tests/integration`, `tests/benchmarks`, `fuzz`) per plan
+- [x] T003 [P] Configure GoogleTest, Google Benchmark, and Clang sanitizers (ASan, UBSan, TSan) in `CMakeLists.txt`
 
 ---
 
