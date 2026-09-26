@@ -1,5 +1,6 @@
 add_executable(helios_integration_tests
     test_foundation_integration.cpp
+    test_ring_engine_integration.cpp
 )
 
 target_compile_definitions(helios_integration_tests PRIVATE
@@ -7,13 +8,14 @@ target_compile_definitions(helios_integration_tests PRIVATE
 )
 
 target_link_libraries(helios_integration_tests PRIVATE
+    helios_lib
     helios_compiler_flags
     helios_sanitizers
     gtest
     gtest_main
+    uring
 )
 
-# Explicitly declare dependency so main binary is built before integration tests run
 add_dependencies(helios_integration_tests helios)
 
 include(GoogleTest)

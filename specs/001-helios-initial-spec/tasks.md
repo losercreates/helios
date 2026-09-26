@@ -22,10 +22,10 @@
 
 **Purpose**: Core infrastructure that MUST be complete before ANY user story can be implemented
 
-- [ ] T004 Implement `liburing` ring abstraction engine in `src/io/ring_engine.hpp` and `src/io/ring_engine.cpp`
+- [x] T004 Implement `liburing` ring abstraction engine in `src/io/ring_engine.hpp` and `src/io/ring_engine.cpp`
 - [ ] T005 [P] Implement fixed-capacity `BufferPool` allocator and 100% pause / 80% resume watermark tracking in `src/buffer/buffer_pool.hpp` and `src/buffer/buffer_pool.cpp`
 - [ ] T006 [P] Implement declarative YAML configuration parser and schema validator in `src/config/config_loader.hpp` and `src/config/config_loader.cpp`
-- [ ] T007 Implement `OpContext` user-data tagging and reference-counted deferred operation cleanup in `src/io/op_context.hpp`
+- [x] T007 Implement `OpContext` user-data tagging and reference-counted deferred operation cleanup in `src/io/op_context.hpp`
 - [ ] T008 [P] Implement lockless thread-local metric accumulators in `src/metrics/metrics_collector.hpp` and `src/metrics/metrics_collector.cpp`
 
 ---
