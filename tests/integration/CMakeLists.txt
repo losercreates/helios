@@ -1,6 +1,7 @@
 add_executable(helios_integration_tests
     test_foundation_integration.cpp
     test_ring_engine_integration.cpp
+    test_tcp_net_integration.cpp
 )
 
 target_compile_definitions(helios_integration_tests PRIVATE

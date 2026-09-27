@@ -1,6 +1,7 @@
 add_executable(helios_unit_tests
     test_foundation.cpp
     test_ring_engine.cpp
+    test_tcp_net.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
