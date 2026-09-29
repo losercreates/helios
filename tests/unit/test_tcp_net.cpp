@@ -53,12 +53,12 @@ TEST(TcpNetUnitTest, ConnectionStateAndMove) {
     RingEngine engine(64);
     TcpConnection conn1(engine);
 
-    EXPECT_EQ(conn1.GetState(), ConnectionState::Disconnected);
+    EXPECT_EQ(conn1.GetState(), SocketState::Disconnected);
     EXPECT_FALSE(conn1.IsOpen());
 
     TcpConnection conn2(engine, 100);
     EXPECT_TRUE(conn2.IsOpen());
-    EXPECT_EQ(conn2.GetState(), ConnectionState::Connected);
+    EXPECT_EQ(conn2.GetState(), SocketState::Connected);
 
     TcpConnection conn3(std::move(conn2));
     EXPECT_FALSE(conn2.IsOpen());
@@ -67,5 +67,5 @@ TEST(TcpNetUnitTest, ConnectionStateAndMove) {
     
     conn3.Close();
     EXPECT_FALSE(conn3.IsOpen());
-    EXPECT_EQ(conn3.GetState(), ConnectionState::Closed);
+    EXPECT_EQ(conn3.GetState(), SocketState::Closed);
 }

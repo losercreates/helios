@@ -8,7 +8,7 @@
 
 namespace helios {
 
-enum class ConnectionState : uint8_t {
+enum class SocketState : uint8_t {
     Disconnected,
     Connecting,
     Connected,
@@ -48,17 +48,17 @@ public:
     void Close() noexcept;
 
     [[nodiscard]] int GetFd() const noexcept { return fd_; }
-    [[nodiscard]] ConnectionState GetState() const noexcept { return state_; }
+    [[nodiscard]] SocketState GetState() const noexcept { return state_; }
     [[nodiscard]] bool IsOpen() const noexcept { return fd_ >= 0; }
     [[nodiscard]] std::string GetLocalEndpoint() const { return SocketUtils::GetLocalEndpoint(fd_); }
     [[nodiscard]] std::string GetPeerEndpoint() const { return SocketUtils::GetPeerEndpoint(fd_); }
 
-    void SetState(ConnectionState state) noexcept { state_ = state; }
+    void SetState(SocketState state) noexcept { state_ = state; }
 
 private:
     RingEngine& engine_;
     int fd_{-1};
-    ConnectionState state_{ConnectionState::Disconnected};
+    SocketState state_{SocketState::Disconnected};
 };
 
 } // namespace helios

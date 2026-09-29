@@ -6,6 +6,7 @@ add_library(helios_lib STATIC
     net/socket_utils.cpp
     net/tcp_listener.cpp
     net/tcp_connection.cpp
+    net/connection_pair.cpp
 )
 
 target_include_directories(helios_lib PUBLIC

@@ -38,9 +38,9 @@
 
 - [ ] T009 [US1] Create unit tests for `BufferPool` acquisition and watermark calculation in `tests/unit/test_buffer_pool.cpp`
 - [ ] T010 [US1] Create unit tests for `RingEngine` SQE preparation and CQE reaping in `tests/unit/test_ring_engine.cpp`
-- [ ] T011 [US1] Implement `ConnectionPair` state machine and bi-directional L4 payload forwarding in `src/net/connection_pair.hpp` and `src/net/connection_pair.cpp`
+- [x] T011 [US1] Implement `ConnectionPair` state machine and bi-directional L4 payload forwarding in `src/net/connection_pair.hpp` and `src/net/connection_pair.cpp`
 - [ ] T012 [US1] Implement Round-Robin load balancer in `src/lb/round_robin.hpp` and `src/lb/round_robin.cpp`
-- [ ] T013 [US1] Implement timeout-bounded half-close (`shutdown(SHUT_WR)` with 5s fallback timer) in `src/net/connection_pair.cpp`
+- [x] T013 [US1] Implement timeout-bounded half-close (`shutdown(SHUT_WR)` with 5s fallback timer) in `src/net/connection_pair.cpp`
 - [ ] T014 [US1] Build single-worker L4 proxy engine and main entrypoint in `src/main.cpp`
 - [ ] T015 [US1] Create end-to-end integration test verifying 100% MD5 data integrity through L4 proxy in `tests/integration/test_l4_proxy.cpp`
 

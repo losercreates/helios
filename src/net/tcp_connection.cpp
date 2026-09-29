@@ -12,7 +12,7 @@ TcpConnection::TcpConnection(RingEngine& engine) noexcept
 TcpConnection::TcpConnection(RingEngine& engine, int existing_fd) noexcept
     : engine_(engine),
       fd_(existing_fd),
-      state_(existing_fd >= 0 ? ConnectionState::Connected : ConnectionState::Disconnected) {}
+      state_(existing_fd >= 0 ? SocketState::Connected : SocketState::Disconnected) {}
 
 TcpConnection::~TcpConnection() {
     Close();
@@ -23,7 +23,7 @@ TcpConnection::TcpConnection(TcpConnection&& other) noexcept
       fd_(other.fd_),
       state_(other.state_) {
     other.fd_ = -1;
-    other.state_ = ConnectionState::Disconnected;
+    other.state_ = SocketState::Disconnected;
 }
 
 TcpConnection& TcpConnection::operator=(TcpConnection&& other) noexcept {
@@ -32,7 +32,7 @@ TcpConnection& TcpConnection::operator=(TcpConnection&& other) noexcept {
         fd_ = other.fd_;
         state_ = other.state_;
         other.fd_ = -1;
-        other.state_ = ConnectionState::Disconnected;
+        other.state_ = SocketState::Disconnected;
     }
     return *this;
 }
@@ -48,7 +48,7 @@ bool TcpConnection::AsyncConnect(const char* host, uint16_t port, sockaddr_in* t
         return false;
     }
 
-    state_ = ConnectionState::Connecting;
+    state_ = SocketState::Connecting;
     return engine_.PrepConnect(fd_, reinterpret_cast<const sockaddr*>(target_addr), sizeof(sockaddr_in), ctx);
 }
 
@@ -66,7 +66,7 @@ bool TcpConnection::ShutdownWrite() noexcept {
     if (fd_ < 0) return false;
     int ret = ::shutdown(fd_, SHUT_WR);
     if (ret == 0) {
-        state_ = ConnectionState::HalfClosedLocal;
+        state_ = SocketState::HalfClosedLocal;
         return true;
     }
     return false;
@@ -76,7 +76,7 @@ void TcpConnection::Close() noexcept {
     if (fd_ >= 0) {
         ::close(fd_);
         fd_ = -1;
-        state_ = ConnectionState::Closed;
+        state_ = SocketState::Closed;
     }
 }
 

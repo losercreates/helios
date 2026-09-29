@@ -33,10 +33,11 @@ helios/
 │   └── net/                    # Linux non-blocking TCP networking primitives
 │       ├── socket_utils.hpp/.cpp# Non-blocking socket helpers & address parsing
 │       ├── tcp_listener.hpp/.cpp# io_uring TCP listener & async accept
-│       └── tcp_connection.hpp/.cpp# io_uring TCP connection, async R/W & half-close
+│       ├── tcp_connection.hpp/.cpp# io_uring TCP connection, async R/W & half-close
+│       └── connection_pair.hpp/.cpp# ConnectionPair state machine & half-close timer
 ├── tests/
-│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net)
-│   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration)
+│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair)
+│   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration, test_connection_pair_integration)
 │   └── benchmarks/             # Google Benchmark suites (bench_foundation)
 └── .github/
     └── workflows/ci.yml        # GitHub Actions CI matrix (Debug, Release, ASan, UBSan, TSan)
@@ -94,6 +95,6 @@ cmake --build build-release -j$(nproc)
 
 ## Verification Summary
 
-* **Unit Tests**: 13 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`).
-* **Integration Tests**: 12 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*` verifying real localhost TCP socket operations: accept, connect, partial reads/writes, EOF, half-close).
-* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (25/25 total CTest tests passing).
+* **Unit Tests**: 18 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`).
+* **Integration Tests**: 19 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*` verifying normal close, client/backend half-close, simultaneous half-close, reset during half-close, in-flight I/O lifetime pinning, half-close fallback timeout, duplicate close idempotency).
+* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (37/37 total CTest tests passing).
