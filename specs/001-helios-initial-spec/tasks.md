@@ -23,7 +23,7 @@
 **Purpose**: Core infrastructure that MUST be complete before ANY user story can be implemented
 
 - [x] T004 Implement `liburing` ring abstraction engine in `src/io/ring_engine.hpp` and `src/io/ring_engine.cpp`
-- [ ] T005 [P] Implement fixed-capacity `BufferPool` allocator and 100% pause / 80% resume watermark tracking in `src/buffer/buffer_pool.hpp` and `src/buffer/buffer_pool.cpp`
+- [x] T005 [P] Implement fixed-capacity `BufferPool` allocator and 100% pause / 80% resume watermark tracking in `src/buffer/buffer_pool.hpp` and `src/buffer/buffer_pool.cpp`
 - [ ] T006 [P] Implement declarative YAML configuration parser and schema validator in `src/config/config_loader.hpp` and `src/config/config_loader.cpp`
 - [x] T007 Implement `OpContext` user-data tagging and reference-counted deferred operation cleanup in `src/io/op_context.hpp`
 - [ ] T008 [P] Implement lockless thread-local metric accumulators in `src/metrics/metrics_collector.hpp` and `src/metrics/metrics_collector.cpp`
@@ -36,7 +36,7 @@
 
 **Independent Test**: Can be tested by launching Helios forwarding port 8080 across echo servers on 9001 and 9002, verifying data integrity via MD5 checksums.
 
-- [ ] T009 [US1] Create unit tests for `BufferPool` acquisition and watermark calculation in `tests/unit/test_buffer_pool.cpp`
+- [x] T009 [US1] Create unit tests for `BufferPool` acquisition and watermark calculation in `tests/unit/test_buffer_pool.cpp`
 - [ ] T010 [US1] Create unit tests for `RingEngine` SQE preparation and CQE reaping in `tests/unit/test_ring_engine.cpp`
 - [x] T011 [US1] Implement `ConnectionPair` state machine and bi-directional L4 payload forwarding in `src/net/connection_pair.hpp` and `src/net/connection_pair.cpp`
 - [ ] T012 [US1] Implement Round-Robin load balancer in `src/lb/round_robin.hpp` and `src/lb/round_robin.cpp`

@@ -27,6 +27,10 @@ helios/
 ├── src/                        # Core source code
 │   ├── main.cpp                # Main executable entry point
 │   ├── foundation.hpp/.cpp     # System metadata & C++20 primitives
+│   ├── buffer/                 # Fixed-capacity BufferPool allocator & watermark backpressure
+│   │   ├── buffer.hpp          # Buffer descriptor with read/write offsets and ref count
+│   │   ├── buffer_pool.hpp/.cpp# Zero-heap allocation BufferPool with LIFO free stack
+│   │   └── backpressure_controller.hpp # High/low watermark backpressure controller (100% pause / 80% resume)
 │   ├── io/                     # Linux io_uring RingEngine & OpContext tracking
 │   │   ├── op_context.hpp      # Operation lifecycle state & CompletionEvent
 │   │   └── ring_engine.hpp/.cpp# liburing SQE submission / CQE reaping engine
@@ -36,8 +40,8 @@ helios/
 │       ├── tcp_connection.hpp/.cpp# io_uring TCP connection, async R/W & half-close
 │       └── connection_pair.hpp/.cpp# ConnectionPair state machine & half-close timer
 ├── tests/
-│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair)
-│   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration, test_connection_pair_integration)
+│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair, test_buffer_pool)
+│   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration, test_connection_pair_integration, test_buffer_lifecycle_integration)
 │   └── benchmarks/             # Google Benchmark suites (bench_foundation)
 └── .github/
     └── workflows/ci.yml        # GitHub Actions CI matrix (Debug, Release, ASan, UBSan, TSan)
@@ -95,6 +99,6 @@ cmake --build build-release -j$(nproc)
 
 ## Verification Summary
 
-* **Unit Tests**: 18 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`).
-* **Integration Tests**: 19 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*` verifying normal close, client/backend half-close, simultaneous half-close, reset during half-close, in-flight I/O lifetime pinning, half-close fallback timeout, duplicate close idempotency).
-* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (37/37 total CTest tests passing).
+* **Unit Tests**: 24 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`).
+* **Integration Tests**: 22 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*` verifying late CQE reclamation, connection close with in-flight I/O, multiple outstanding ops, double-release protection, high/low watermark backpressure, and socketpair stress testing).
+* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (46/46 total CTest tests passing).
