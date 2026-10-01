@@ -4,6 +4,7 @@ add_executable(helios_unit_tests
     test_tcp_net.cpp
     test_connection_pair.cpp
     test_buffer_pool.cpp
+    test_round_robin.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE

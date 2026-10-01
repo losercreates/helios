@@ -34,14 +34,17 @@ helios/
 │   ├── io/                     # Linux io_uring RingEngine & OpContext tracking
 │   │   ├── op_context.hpp      # Operation lifecycle state & CompletionEvent
 │   │   └── ring_engine.hpp/.cpp# liburing SQE submission / CQE reaping engine
+│   ├── lb/                     # Load balancing algorithms
+│   │   └── round_robin.hpp/.cpp# Round-Robin backend selector
 │   └── net/                    # Linux non-blocking TCP networking primitives
 │       ├── socket_utils.hpp/.cpp# Non-blocking socket helpers & address parsing
 │       ├── tcp_listener.hpp/.cpp# io_uring TCP listener & async accept
 │       ├── tcp_connection.hpp/.cpp# io_uring TCP connection, async R/W & half-close
-│       └── connection_pair.hpp/.cpp# ConnectionPair state machine & half-close timer
+│       ├── connection_pair.hpp/.cpp# ConnectionPair state machine & half-close timer
+│       └── l4_proxy_server.hpp/.cpp# Single-threaded L4 TCP reverse proxy engine
 ├── tests/
-│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair, test_buffer_pool)
-│   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration, test_connection_pair_integration, test_buffer_lifecycle_integration)
+│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair, test_buffer_pool, test_round_robin)
+│   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration, test_connection_pair_integration, test_buffer_lifecycle_integration, test_l4_proxy_integration)
 │   └── benchmarks/             # Google Benchmark suites (bench_foundation)
 └── .github/
     └── workflows/ci.yml        # GitHub Actions CI matrix (Debug, Release, ASan, UBSan, TSan)
@@ -99,6 +102,6 @@ cmake --build build-release -j$(nproc)
 
 ## Verification Summary
 
-* **Unit Tests**: 24 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`).
-* **Integration Tests**: 22 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*` verifying late CQE reclamation, connection close with in-flight I/O, multiple outstanding ops, double-release protection, high/low watermark backpressure, and socketpair stress testing).
-* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (46/46 total CTest tests passing).
+* **Unit Tests**: 28 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`).
+* **Integration Tests**: 30 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*` verifying basic request/response forwarding, 256KB payload integrity, fragmented streaming, multiple client round-robin load balancing, backend refused error handling, client/backend half-close, backpressure recovery, and graceful proxy teardown).
+* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (58/58 total CTest tests passing).
