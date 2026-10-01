@@ -22,8 +22,8 @@ public:
     ~TestTcpBackend() { Stop(); }
 
     bool Start() {
-        listen_fd_ = ::socket(AF_INET, SOCK_STREAM, 0);
-        if (listen_fd_ < 0) return false;
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return false;
 
         sockaddr_in addr{};
         addr.sin_family = AF_INET;
@@ -31,24 +31,23 @@ public:
         addr.sin_port = 0; // Ephemeral port
 
         int opt = 1;
-        setsockopt(listen_fd_, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
-        if (bind(listen_fd_, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
-            close(listen_fd_);
-            listen_fd_ = -1;
+        if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+            close(fd);
             return false;
         }
 
         socklen_t len = sizeof(addr);
-        getsockname(listen_fd_, reinterpret_cast<sockaddr*>(&addr), &len);
+        getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
         port_ = ntohs(addr.sin_port);
 
-        if (listen(listen_fd_, 128) < 0) {
-            close(listen_fd_);
-            listen_fd_ = -1;
+        if (listen(fd, 128) < 0) {
+            close(fd);
             return false;
         }
 
+        listen_fd_.store(fd);
         running_ = true;
         worker_thread_ = std::thread([this]() { RunEchoLoop(); });
         return true;
@@ -57,10 +56,10 @@ public:
     void Stop() {
         if (running_) {
             running_ = false;
-            if (listen_fd_ >= 0) {
-                shutdown(listen_fd_, SHUT_RDWR);
-                close(listen_fd_);
-                listen_fd_ = -1;
+            int fd = listen_fd_.exchange(-1);
+            if (fd >= 0) {
+                shutdown(fd, SHUT_RDWR);
+                close(fd);
             }
             if (worker_thread_.joinable()) {
                 worker_thread_.join();
@@ -74,9 +73,11 @@ public:
 private:
     void RunEchoLoop() {
         while (running_) {
+            int fd = listen_fd_.load();
+            if (fd < 0) break;
             sockaddr_in client_addr{};
             socklen_t len = sizeof(client_addr);
-            int client_fd = accept(listen_fd_, reinterpret_cast<sockaddr*>(&client_addr), &len);
+            int client_fd = accept(fd, reinterpret_cast<sockaddr*>(&client_addr), &len);
             if (client_fd < 0) {
                 if (!running_) break;
                 std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -100,7 +101,7 @@ private:
         }
     }
 
-    int listen_fd_{-1};
+    std::atomic<int> listen_fd_{-1};
     uint16_t port_{0};
     std::atomic<bool> running_{false};
     std::thread worker_thread_;
