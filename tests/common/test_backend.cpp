@@ -59,12 +59,21 @@ void TestBackend::Stop() {
             accept_thread_.join();
         }
 
-        std::lock_guard<std::mutex> lock(clients_mutex_);
-        for (int cfd : active_clients_) {
-            shutdown(cfd, SHUT_RDWR);
-            close(cfd);
+        std::vector<std::thread> threads_to_join;
+        {
+            std::lock_guard<std::mutex> lock(clients_mutex_);
+            for (int cfd : active_clients_) {
+                shutdown(cfd, SHUT_RDWR);
+                close(cfd);
+            }
+            active_clients_.clear();
+            threads_to_join = std::move(client_threads_);
         }
-        active_clients_.clear();
+        for (auto& t : threads_to_join) {
+            if (t.joinable()) {
+                t.join();
+            }
+        }
     }
 }
 
@@ -94,17 +103,17 @@ void TestBackend::AcceptLoop() {
 
         accepted_count_++;
 
+        std::thread t(&TestBackend::HandleConnection, this, client_fd);
         {
             std::lock_guard<std::mutex> lock(clients_mutex_);
             active_clients_.push_back(client_fd);
+            client_threads_.push_back(std::move(t));
         }
 
         if (config_.behavior == BackendBehavior::DISCONNECT_ON_CONNECT) {
-            close(client_fd);
+            // It will disconnect on its own loop or we can just leave it
             continue;
         }
-
-        std::thread(&TestBackend::HandleConnection, this, client_fd).detach();
     }
 }
 

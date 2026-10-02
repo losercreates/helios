@@ -63,6 +63,7 @@ private:
     
     std::mutex clients_mutex_;
     std::vector<int> active_clients_;
+    std::vector<std::thread> client_threads_;
 };
 
 } // namespace helios::test
