@@ -1,6 +1,7 @@
 #include "buffer_pool.hpp"
 #include <stdexcept>
 #include <algorithm>
+#include <iostream>
 
 namespace helios {
 
@@ -36,6 +37,7 @@ BufferPool::BufferPool(size_t total_buffers, size_t block_size, double high_wate
 
 Buffer* BufferPool::Acquire() {
     if (free_stack_.empty()) {
+        std::cerr << "BUFFER POOL EXHAUSTED!\n";
         UpdateBackpressureState();
         return nullptr;
     }
@@ -63,6 +65,7 @@ bool BufferPool::Release(Buffer* buf) {
 
     // Double-release / use-after-release protection
     if (!buf->is_checked_out || buf->ref_count == 0) {
+        std::cerr << "RELEASE FAILED! checked_out=" << buf->is_checked_out << " ref=" << buf->ref_count << "\n";
         return false;
     }
 

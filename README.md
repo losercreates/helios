@@ -45,6 +45,8 @@ helios/
 ├── tests/
 │   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair, test_buffer_pool, test_round_robin)
 │   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration, test_connection_pair_integration, test_buffer_lifecycle_integration, test_l4_proxy_integration)
+│   ├── e2e/                    # End-to-end tests validating the entire proxy with mock clients and servers
+│   ├── stress/                 # Multi-connection storm stress tests for memory leaks and concurrency bugs
 │   └── benchmarks/             # Google Benchmark suites (bench_foundation)
 └── .github/
     └── workflows/ci.yml        # GitHub Actions CI matrix (Debug, Release, ASan, UBSan, TSan)
@@ -102,6 +104,7 @@ cmake --build build-release -j$(nproc)
 
 ## Verification Summary
 
-* **Unit Tests**: 28 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`).
-* **Integration Tests**: 30 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*` verifying basic request/response forwarding, 256KB payload integrity, fragmented streaming, multiple client round-robin load balancing, backend refused error handling, client/backend half-close, backpressure recovery, and graceful proxy teardown).
-* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (58/58 total CTest tests passing).
+* **Unit Tests**: 21 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`).
+* **Integration Tests**: 30 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`).
+* **E2E & Stress Tests**: 6 advanced tests passing (`e2e_test_e2e`, `e2e_test_data_integrity`, `e2e_test_backpressure`, `e2e_test_connection_lifecycle`, `e2e_test_fault_injection`, `stress_test_multi_conn`).
+* **Sanitizers**: Passed cleanly under AddressSanitizer and UndefinedBehaviorSanitizer with zero memory leaks or undefined behavior warnings (64/64 total CTest tests passing).

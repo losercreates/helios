@@ -1,6 +1,9 @@
 if(HELIOS_BUILD_TESTS)
+    add_subdirectory(common)
     add_subdirectory(unit)
     add_subdirectory(integration)
+    add_subdirectory(e2e)
+    add_subdirectory(stress)
 endif()
 
 if(HELIOS_BUILD_BENCHMARKS)

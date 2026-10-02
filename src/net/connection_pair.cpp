@@ -2,6 +2,7 @@
 #include <sys/socket.h>
 #include <unistd.h>
 #include <utility>
+#include <iostream>
 
 namespace helios {
 
@@ -121,6 +122,7 @@ bool ConnectionPair::HandleBackendFin() {
 }
 
 void ConnectionPair::InitiateClose(const char* reason) {
+    if (reason) std::cerr << "InitiateClose: " << reason << "\n";
     (void)reason;
     if (state_ == ConnectionState::Closed || state_ == ConnectionState::PendingCancellation) {
         return;

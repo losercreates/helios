@@ -106,36 +106,45 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
 
     (void)timeout;
     int submitted = engine_.Submit();
-    std::array<CompletionEvent, 128> events{};
-    uint32_t reaped = engine_.ReapCompletions(events);
+    uint32_t total_reaped = 0;
+    while (true) {
+        std::array<CompletionEvent, 256> events{};
+        uint32_t reaped = engine_.ReapCompletions(events);
+        if (reaped == 0) break;
 
-    for (uint32_t i = 0; i < reaped; ++i) {
-        if (!events[i].context) continue;
-        auto* pctx = static_cast<ProxyOpContext*>(events[i].context);
+        for (uint32_t i = 0; i < reaped; ++i) {
+            if (!events[i].context) continue;
+            auto* pctx = static_cast<ProxyOpContext*>(events[i].context);
 
-        if (pctx->role == ProxyOpRole::Accept) {
-            HandleAcceptCompletion(events[i]);
-            continue;
-        }
+            if (pctx->role == ProxyOpRole::Accept) {
+                HandleAcceptCompletion(events[i]);
+                continue;
+            }
 
-        auto conn_id = pctx->conn ? pctx->conn->GetId() : 0;
-        auto it = connections_.find(conn_id);
-        if (it != connections_.end()) {
-            switch (pctx->role) {
-                case ProxyOpRole::Connect: HandleConnectCompletion(*it->second, events[i]); break;
-                case ProxyOpRole::ClientRead: HandleClientReadCompletion(*it->second, events[i]); break;
-                case ProxyOpRole::BackendWrite: HandleBackendWriteCompletion(*it->second, events[i]); break;
-                case ProxyOpRole::BackendRead: HandleBackendReadCompletion(*it->second, events[i]); break;
-                case ProxyOpRole::ClientWrite: HandleClientWriteCompletion(*it->second, events[i]); break;
-                default: break;
+            auto conn_id = pctx->conn ? pctx->conn->GetId() : 0;
+            auto it = connections_.find(conn_id);
+            if (it != connections_.end()) {
+                switch (pctx->role) {
+                    case ProxyOpRole::Connect: HandleConnectCompletion(*it->second, events[i]); break;
+                    case ProxyOpRole::ClientRead: HandleClientReadCompletion(*it->second, events[i]); break;
+                    case ProxyOpRole::BackendWrite: HandleBackendWriteCompletion(*it->second, events[i]); break;
+                    case ProxyOpRole::BackendRead: HandleBackendReadCompletion(*it->second, events[i]); break;
+                    case ProxyOpRole::ClientWrite: HandleClientWriteCompletion(*it->second, events[i]); break;
+                    default: break;
+                }
             }
         }
+        total_reaped += reaped;
+        
+        // Batch submit any SQEs prepped during this reap cycle
+        engine_.Submit();
     }
 
     CheckTimeouts();
     ResumePausedReads();
+    engine_.Submit();
 
-    return static_cast<int>(reaped) + submitted;
+    return static_cast<int>(total_reaped) + submitted;
 }
 
 void L4ProxyServer::ScheduleAccept() {
@@ -238,6 +247,12 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
 
 void L4ProxyServer::TryStartClientRead(ConnectionStateData& data) {
     if (data.client_read_active || data.conn->IsClientReadStopped() || data.conn->IsDraining()) {
+        data.client_read_paused = false;
+        return;
+    }
+
+    if (data.backend_read_paused) {
+        data.client_read_paused = true;
         return;
     }
 
@@ -273,10 +288,22 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
             // EOF from client
             buffer_pool_.Release(buf);
             conn->HandleClientFin();
+        } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
+            data.client_read_ctx.buf = buf;
+            engine_.PrepRead(conn->GetClientFd(), buf->data, buf->capacity, 0, &data.client_read_ctx);
+            conn->IncrementPendingCqe();
+            data.client_read_active = true;
+            conn->DecrementPendingCqe();
+            return;
         } else {
             // Error on client read
             buffer_pool_.Release(buf);
-            conn->InitiateClose("Client read error");
+            if (event.result != -ECONNRESET) {
+                std::cerr << "Client read error: " << event.result << "\n";
+                conn->InitiateClose("Client read error");
+            } else {
+                conn->HandleClientFin();
+            }
         }
     }
 
@@ -300,12 +327,15 @@ void L4ProxyServer::HandleBackendWriteCompletion(ConnectionStateData& data, cons
             }
 
             // Complete payload write succeeded
-            buf->Reset();
             buffer_pool_.Release(buf);
             data.backend_write_ctx.buf = nullptr;
-
-            TryStartClientRead(data);
-            engine_.Submit();
+            data.client_read_paused = true;
+        } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
+            data.backend_write_ctx.buf = buf;
+            engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);
+            conn->IncrementPendingCqe();
+            conn->DecrementPendingCqe();
+            return;
         } else {
             // Backend write error
             buffer_pool_.Release(buf);
@@ -319,6 +349,7 @@ void L4ProxyServer::HandleBackendWriteCompletion(ConnectionStateData& data, cons
 
 void L4ProxyServer::TryStartBackendRead(ConnectionStateData& data) {
     if (data.backend_read_active || data.conn->IsBackendReadStopped() || data.conn->IsDraining()) {
+        data.backend_read_paused = false;
         return;
     }
 
@@ -354,10 +385,22 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
             // EOF from backend
             buffer_pool_.Release(buf);
             conn->HandleBackendFin();
+        } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
+            data.backend_read_ctx.buf = buf;
+            engine_.PrepRead(conn->GetBackendFd(), buf->data, buf->capacity, 0, &data.backend_read_ctx);
+            conn->IncrementPendingCqe();
+            data.backend_read_active = true;
+            conn->DecrementPendingCqe();
+            return;
         } else {
             // Error on backend read
             buffer_pool_.Release(buf);
-            conn->InitiateClose("Backend read error");
+            if (event.result != -ECONNRESET) {
+                std::cerr << "Backend read error: " << event.result << "\n";
+                conn->InitiateClose("Backend read error");
+            } else {
+                conn->HandleBackendFin();
+            }
         }
     }
 
@@ -381,12 +424,15 @@ void L4ProxyServer::HandleClientWriteCompletion(ConnectionStateData& data, const
             }
 
             // Complete payload write succeeded
-            buf->Reset();
             buffer_pool_.Release(buf);
             data.client_write_ctx.buf = nullptr;
-
-            TryStartBackendRead(data);
-            engine_.Submit();
+            data.backend_read_paused = true;
+        } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
+            data.client_write_ctx.buf = buf;
+            engine_.PrepWrite(conn->GetClientFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.client_write_ctx);
+            conn->IncrementPendingCqe();
+            conn->DecrementPendingCqe();
+            return;
         } else {
             // Client write error
             buffer_pool_.Release(buf);
@@ -401,11 +447,14 @@ void L4ProxyServer::HandleClientWriteCompletion(ConnectionStateData& data, const
 void L4ProxyServer::ResumePausedReads() {
     for (auto& [id, data] : connections_) {
         if (!data) continue;
-        if (data->client_read_paused) {
-            TryStartClientRead(*data);
-        }
         if (data->backend_read_paused) {
             TryStartBackendRead(*data);
+        }
+    }
+    for (auto& [id, data] : connections_) {
+        if (!data) continue;
+        if (data->client_read_paused) {
+            TryStartClientRead(*data);
         }
     }
     ScheduleAccept();
@@ -413,6 +462,18 @@ void L4ProxyServer::ResumePausedReads() {
 
 void L4ProxyServer::CheckTimeouts() {
     auto now = std::chrono::steady_clock::now();
+
+    if (buffer_pool_.FreeCount() == 0) {
+        size_t held = 0;
+        for (auto& [id, data] : connections_) {
+            if (!data) continue;
+            if (data->client_read_ctx.buf) held++;
+            if (data->client_write_ctx.buf) held++;
+            if (data->backend_read_ctx.buf) held++;
+            if (data->backend_write_ctx.buf) held++;
+        }
+        std::cerr << "POOL EXHAUSTED! Connections hold " << held << " buffers.\n";
+    }
     for (auto& [id, data] : connections_) {
         if (!data || !data->conn) continue;
         data->conn->CheckHalfCloseTimeout(now, config_.half_close_timeout);
