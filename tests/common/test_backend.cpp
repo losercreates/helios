@@ -63,10 +63,10 @@ void TestBackend::Stop() {
         {
             std::lock_guard<std::mutex> lock(clients_mutex_);
             for (int cfd : active_clients_) {
+                // Only shutdown to unblock recv in HandleConnection.
+                // HandleConnection will perform the actual close(cfd) and erase itself from active_clients_.
                 shutdown(cfd, SHUT_RDWR);
-                close(cfd);
             }
-            active_clients_.clear();
             threads_to_join = std::move(client_threads_);
         }
         for (auto& t : threads_to_join) {

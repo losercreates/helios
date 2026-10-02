@@ -98,8 +98,9 @@ TEST_F(StressTest, ConnectionStorm) {
 
     // Wait for clean up
     std::this_thread::sleep_for(std::chrono::milliseconds(500));
-    EXPECT_EQ(proxy.GetActiveConnectionCount(), 0);
-
     backend.Stop();
     StopProxyLoop();
+
+    // Now that the proxy thread is joined, safely read the connection count
+    EXPECT_EQ(proxy.GetActiveConnectionCount(), 0);
 }
