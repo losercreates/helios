@@ -1,45 +1,34 @@
 #pragma once
 
-#include <string>
+#include "load_balancer.hpp"
 #include <vector>
-#include <optional>
-#include <cstdint>
-#include <cstddef>
-#include <netinet/in.h>
+#include <memory>
 
 namespace helios {
 
-struct BackendEndpoint {
-    std::string host;
-    uint16_t port{0};
-    bool active{true};
-};
-
-// Round-Robin Load Balancer selecting backend endpoints sequentially
-class RoundRobinLoadBalancer {
+// Round-Robin Load Balancer selecting eligible backend endpoints sequentially
+class RoundRobinLoadBalancer : public LoadBalancer {
 public:
     RoundRobinLoadBalancer() = default;
-    explicit RoundRobinLoadBalancer(std::vector<BackendEndpoint> backends);
-    ~RoundRobinLoadBalancer() = default;
+    ~RoundRobinLoadBalancer() override = default;
 
-    // Add a backend endpoint
-    void AddBackend(std::string host, uint16_t port);
+    // Backend Membership Management
+    void AddBackend(std::shared_ptr<Backend> backend) override;
+    bool RemoveBackend(uint32_t backend_id) override;
 
     // Select the next active backend endpoint via Round-Robin
-    [[nodiscard]] std::optional<BackendEndpoint> SelectBackend();
+    [[nodiscard]] std::shared_ptr<Backend> SelectBackend() noexcept override;
 
-    // Select and parse into sockaddr_in
-    [[nodiscard]] bool SelectBackendAddr(sockaddr_in* out_addr, BackendEndpoint* out_endpoint = nullptr);
-
-    // Status queries
-    [[nodiscard]] size_t GetBackendCount() const noexcept { return backends_.size(); }
-    [[nodiscard]] bool IsEmpty() const noexcept { return backends_.empty(); }
-
+    // State Queries
+    [[nodiscard]] std::vector<std::shared_ptr<Backend>> GetAllBackends() const override;
+    [[nodiscard]] size_t GetBackendCount() const noexcept override;
+    [[nodiscard]] bool IsEmpty() const noexcept override;
+    
     // Clear backends
-    void ClearBackends() noexcept;
+    void ClearBackends() noexcept override;
 
 private:
-    std::vector<BackendEndpoint> backends_;
+    std::vector<std::shared_ptr<Backend>> backends_;
     size_t next_index_{0};
 };
 

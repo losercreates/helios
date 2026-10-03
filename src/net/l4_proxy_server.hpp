@@ -7,6 +7,7 @@
 #include "net/tcp_listener.hpp"
 #include "net/tcp_connection.hpp"
 #include "net/connection_pair.hpp"
+#include "lb/load_balancer.hpp"
 #include "lb/round_robin.hpp"
 
 #include <unordered_map>
@@ -57,7 +58,7 @@ public:
 
     // Load balancer configuration
     void AddBackend(std::string host, uint16_t port);
-    RoundRobinLoadBalancer& GetLoadBalancer() noexcept { return lb_; }
+    LoadBalancer& GetLoadBalancer() noexcept { return *lb_; }
 
     // Initialization & Lifecycle
     bool Start();
@@ -110,8 +111,9 @@ private:
     BufferPool buffer_pool_;
     BackpressureController backpressure_ctrl_;
     TcpListener listener_;
-    RoundRobinLoadBalancer lb_;
+    std::unique_ptr<LoadBalancer> lb_;
 
+    uint32_t next_backend_id_{1};
     uint64_t next_conn_id_{1};
     bool running_{false};
     bool accept_in_flight_{false};

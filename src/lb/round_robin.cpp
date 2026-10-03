@@ -1,47 +1,58 @@
 #include "round_robin.hpp"
-#include "net/socket_utils.hpp"
+#include <algorithm>
 #include <utility>
 
 namespace helios {
 
-RoundRobinLoadBalancer::RoundRobinLoadBalancer(std::vector<BackendEndpoint> backends)
-    : backends_(std::move(backends)) {}
-
-void RoundRobinLoadBalancer::AddBackend(std::string host, uint16_t port) {
-    backends_.push_back(BackendEndpoint{
-        .host = std::move(host),
-        .port = port,
-        .active = true
-    });
+void RoundRobinLoadBalancer::AddBackend(std::shared_ptr<Backend> backend) {
+    if (!backend) return;
+    backends_.push_back(std::move(backend));
 }
 
-std::optional<BackendEndpoint> RoundRobinLoadBalancer::SelectBackend() {
+bool RoundRobinLoadBalancer::RemoveBackend(uint32_t backend_id) {
+    auto it = std::find_if(backends_.begin(), backends_.end(),
+                           [backend_id](const std::shared_ptr<Backend>& b) { return b->GetId() == backend_id; });
+    if (it != backends_.end()) {
+        backends_.erase(it);
+        // Ensure next_index_ stays within bounds
+        if (backends_.empty()) {
+            next_index_ = 0;
+        } else {
+            next_index_ = next_index_ % backends_.size();
+        }
+        return true;
+    }
+    return false;
+}
+
+std::shared_ptr<Backend> RoundRobinLoadBalancer::SelectBackend() noexcept {
     if (backends_.empty()) {
-        return std::nullopt;
+        return nullptr;
     }
 
     size_t count = backends_.size();
     for (size_t i = 0; i < count; ++i) {
         size_t idx = (next_index_ + i) % count;
-        if (backends_[idx].active) {
+        auto& backend = backends_[idx];
+        if (backend->IsEligible() && !backend->IsDraining()) {
             next_index_ = (idx + 1) % count;
-            return backends_[idx];
+            return backend;
         }
     }
 
-    return std::nullopt;
+    return nullptr;
 }
 
-bool RoundRobinLoadBalancer::SelectBackendAddr(sockaddr_in* out_addr, BackendEndpoint* out_endpoint) {
-    if (!out_addr) return false;
-    auto ep = SelectBackend();
-    if (!ep.has_value()) return false;
+std::vector<std::shared_ptr<Backend>> RoundRobinLoadBalancer::GetAllBackends() const {
+    return backends_;
+}
 
-    if (out_endpoint) {
-        *out_endpoint = ep.value();
-    }
+size_t RoundRobinLoadBalancer::GetBackendCount() const noexcept {
+    return backends_.size();
+}
 
-    return SocketUtils::ParseSockAddr(ep->host.c_str(), ep->port, out_addr);
+bool RoundRobinLoadBalancer::IsEmpty() const noexcept {
+    return backends_.empty();
 }
 
 void RoundRobinLoadBalancer::ClearBackends() noexcept {

@@ -9,6 +9,7 @@ add_library(helios_lib STATIC
     net/tcp_connection.cpp
     net/connection_pair.cpp
     net/l4_proxy_server.cpp
+    lb/backend.cpp
     lb/round_robin.cpp
 )
 

@@ -17,7 +17,8 @@ L4ProxyServer::L4ProxyServer(Config config)
       engine_(static_cast<uint32_t>(config_.ring_entries)),
       buffer_pool_(config_.total_buffers, config_.buffer_size),
       backpressure_ctrl_(buffer_pool_),
-      listener_(engine_) {
+      listener_(engine_),
+      lb_(std::make_unique<RoundRobinLoadBalancer>()) {
     accept_ctx_.role = ProxyOpRole::Accept;
 }
 
@@ -26,7 +27,7 @@ L4ProxyServer::~L4ProxyServer() {
 }
 
 void L4ProxyServer::AddBackend(std::string host, uint16_t port) {
-    lb_.AddBackend(std::move(host), port);
+    lb_->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port));
 }
 
 bool L4ProxyServer::Start() {
@@ -173,14 +174,15 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     }
 
     int client_fd = event.result;
-    sockaddr_in backend_addr{};
-
-    if (!lb_.SelectBackendAddr(&backend_addr)) {
+    auto backend = lb_->SelectBackend();
+    if (!backend) {
         // No backend available
         ::close(client_fd);
         ScheduleAccept();
         return;
     }
+
+    sockaddr_in backend_addr = backend->GetSockAddr();
 
     int backend_fd = SocketUtils::CreateTcpSocket();
     if (backend_fd < 0) {
