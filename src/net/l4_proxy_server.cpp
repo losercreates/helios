@@ -6,6 +6,7 @@
 #include <vector>
 #include <algorithm>
 #include <iostream>
+#include "lb/weighted_round_robin.hpp"
 
 namespace helios {
 
@@ -17,8 +18,14 @@ L4ProxyServer::L4ProxyServer(Config config)
       engine_(static_cast<uint32_t>(config_.ring_entries)),
       buffer_pool_(config_.total_buffers, config_.buffer_size),
       backpressure_ctrl_(buffer_pool_),
-      listener_(engine_),
-      lb_(std::make_unique<RoundRobinLoadBalancer>()) {
+      listener_(engine_) {
+    
+    if (config_.lb_algorithm == "weighted_round_robin") {
+        lb_ = std::make_unique<WeightedRoundRobinLoadBalancer>();
+    } else {
+        lb_ = std::make_unique<RoundRobinLoadBalancer>();
+    }
+
     accept_ctx_.role = ProxyOpRole::Accept;
 }
 
@@ -26,8 +33,8 @@ L4ProxyServer::~L4ProxyServer() {
     Stop();
 }
 
-void L4ProxyServer::AddBackend(std::string host, uint16_t port) {
-    lb_->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port));
+void L4ProxyServer::AddBackend(std::string host, uint16_t port, uint32_t weight) {
+    lb_->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port, weight));
 }
 
 bool L4ProxyServer::Start() {

@@ -11,6 +11,7 @@ add_library(helios_lib STATIC
     net/l4_proxy_server.cpp
     lb/backend.cpp
     lb/round_robin.cpp
+    lb/weighted_round_robin.cpp
 )
 
 target_include_directories(helios_lib PUBLIC

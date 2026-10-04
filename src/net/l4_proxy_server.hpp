@@ -44,6 +44,7 @@ public:
         size_t buffer_size{16384};
         std::chrono::milliseconds half_close_timeout{5000};
         std::chrono::milliseconds idle_timeout{30000};
+        std::string lb_algorithm{"round_robin"};
     };
 
     L4ProxyServer();
@@ -57,7 +58,7 @@ public:
     L4ProxyServer& operator=(L4ProxyServer&&) = delete;
 
     // Load balancer configuration
-    void AddBackend(std::string host, uint16_t port);
+    void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
     LoadBalancer& GetLoadBalancer() noexcept { return *lb_; }
 
     // Initialization & Lifecycle

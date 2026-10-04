@@ -433,3 +433,48 @@ TEST_F(L4ProxyIntegrationTest, GracefulShutdownWithActiveConnections) {
 
     close(client_fd);
 }
+
+// 9. Weighted Round-Robin Load Balancing
+TEST_F(L4ProxyIntegrationTest, WeightedRoundRobinDistribution) {
+    TestTcpBackend backend1;
+    TestTcpBackend backend2;
+    ASSERT_TRUE(backend1.Start());
+    ASSERT_TRUE(backend2.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.lb_algorithm = "weighted_round_robin";
+    L4ProxyServer proxy(config);
+    proxy.AddBackend("127.0.0.1", backend1.GetPort(), 1);
+    proxy.AddBackend("127.0.0.1", backend2.GetPort(), 3);
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    constexpr int kNumClients = 20;
+    sockaddr_in target_addr{};
+    ASSERT_TRUE(SocketUtils::ParseSockAddr("127.0.0.1", proxy.GetPort(), &target_addr));
+
+    for (int i = 0; i < kNumClients; ++i) {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        ASSERT_GT(fd, 0);
+        ASSERT_EQ(connect(fd, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+        std::string ping = "Ping" + std::to_string(i);
+        send(fd, ping.data(), ping.size(), 0);
+
+        char buf[32]{};
+        ssize_t n = recv(fd, buf, sizeof(buf), 0);
+        ASSERT_GT(n, 0);
+        EXPECT_EQ(std::string(buf, static_cast<size_t>(n)), ping);
+
+        close(fd);
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+
+    EXPECT_EQ(backend1.GetAcceptedCount(), 5u);
+    EXPECT_EQ(backend2.GetAcceptedCount(), 15u);
+
+    StopProxyLoop();
+}
