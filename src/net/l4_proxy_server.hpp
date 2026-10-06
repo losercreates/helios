@@ -92,6 +92,14 @@ private:
 
         bool client_read_paused{false};
         bool backend_read_paused{false};
+
+        std::shared_ptr<Backend> backend;
+
+        ~ConnectionStateData() {
+            if (backend) {
+                backend->DecrementActiveConnections();
+            }
+        }
     };
 
     void ScheduleAccept();

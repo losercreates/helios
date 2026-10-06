@@ -478,3 +478,82 @@ TEST_F(L4ProxyIntegrationTest, WeightedRoundRobinDistribution) {
 
     StopProxyLoop();
 }
+
+// 10. Least-Connections Load Balancing
+TEST_F(L4ProxyIntegrationTest, LeastConnectionsDistribution) {
+    TestTcpBackend backend1;
+    TestTcpBackend backend2;
+    ASSERT_TRUE(backend1.Start());
+    ASSERT_TRUE(backend2.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.lb_algorithm = "least_connections";
+    L4ProxyServer proxy(config);
+    proxy.AddBackend("127.0.0.1", backend1.GetPort());
+    proxy.AddBackend("127.0.0.1", backend2.GetPort());
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    sockaddr_in target_addr{};
+    ASSERT_TRUE(SocketUtils::ParseSockAddr("127.0.0.1", proxy.GetPort(), &target_addr));
+
+    // Connect Client A, it should go to backend1 (tie break by ID)
+    int fdA = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fdA, 0);
+    ASSERT_EQ(connect(fdA, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    // Give proxy a moment to register connection state
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // Connect Client B, since backend1 has 1 connection and backend2 has 0, it should go to backend2
+    int fdB = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fdB, 0);
+    ASSERT_EQ(connect(fdB, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // Send payload to check routing
+    std::string pingA = "PingA";
+    send(fdA, pingA.data(), pingA.size(), 0);
+    
+    std::string pingB = "PingB";
+    send(fdB, pingB.data(), pingB.size(), 0);
+
+    char buf[32]{};
+    recv(fdA, buf, sizeof(buf), 0);
+    recv(fdB, buf, sizeof(buf), 0);
+    
+    // Check that each backend got exactly 1 connection so far
+    EXPECT_EQ(backend1.GetAcceptedCount(), 1u);
+    EXPECT_EQ(backend2.GetAcceptedCount(), 1u);
+
+    // Connect Client C. Both have 1 connection, tie-break gives it to backend1.
+    int fdC = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fdC, 0);
+    ASSERT_EQ(connect(fdC, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(backend1.GetAcceptedCount(), 2u);
+    EXPECT_EQ(backend2.GetAcceptedCount(), 1u);
+
+    // Disconnect Client A and C, dropping backend1's connections to 0.
+    close(fdA);
+    close(fdC);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+
+    // Connect Client D. backend1 has 0, backend2 has 1. Should go to backend1.
+    int fdD = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fdD, 0);
+    ASSERT_EQ(connect(fdD, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(backend1.GetAcceptedCount(), 3u); // Total historically accepted
+    EXPECT_EQ(backend2.GetAcceptedCount(), 1u);
+
+    close(fdB);
+    close(fdD);
+
+    StopProxyLoop();
+}

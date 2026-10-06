@@ -12,6 +12,7 @@ add_library(helios_lib STATIC
     lb/backend.cpp
     lb/round_robin.cpp
     lb/weighted_round_robin.cpp
+    lb/least_connections.cpp
 )
 
 target_include_directories(helios_lib PUBLIC

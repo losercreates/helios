@@ -6,6 +6,7 @@ add_executable(helios_unit_tests
     test_buffer_pool.cpp
     test_round_robin.cpp
     test_weighted_round_robin.cpp
+    test_least_connections.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE

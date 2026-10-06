@@ -7,6 +7,7 @@
 #include <algorithm>
 #include <iostream>
 #include "lb/weighted_round_robin.hpp"
+#include "lb/least_connections.hpp"
 
 namespace helios {
 
@@ -22,6 +23,8 @@ L4ProxyServer::L4ProxyServer(Config config)
     
     if (config_.lb_algorithm == "weighted_round_robin") {
         lb_ = std::make_unique<WeightedRoundRobinLoadBalancer>();
+    } else if (config_.lb_algorithm == "least_connections") {
+        lb_ = std::make_unique<LeastConnectionsLoadBalancer>();
     } else {
         lb_ = std::make_unique<RoundRobinLoadBalancer>();
     }
@@ -209,6 +212,8 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     auto data = std::make_unique<ConnectionStateData>();
     data->conn = conn;
     data->backend_addr = backend_addr;
+    data->backend = backend;
+    backend->IncrementActiveConnections();
 
     data->client_read_ctx.role = ProxyOpRole::ClientRead;
     data->client_read_ctx.conn = conn;
