@@ -13,6 +13,7 @@ add_library(helios_lib STATIC
     lb/round_robin.cpp
     lb/weighted_round_robin.cpp
     lb/least_connections.cpp
+    lb/consistent_hash.cpp
 )
 
 target_include_directories(helios_lib PUBLIC

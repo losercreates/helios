@@ -8,6 +8,7 @@
 #include <iostream>
 #include "lb/weighted_round_robin.hpp"
 #include "lb/least_connections.hpp"
+#include "lb/consistent_hash.hpp"
 
 namespace helios {
 
@@ -25,6 +26,8 @@ L4ProxyServer::L4ProxyServer(Config config)
         lb_ = std::make_unique<WeightedRoundRobinLoadBalancer>();
     } else if (config_.lb_algorithm == "least_connections") {
         lb_ = std::make_unique<LeastConnectionsLoadBalancer>();
+    } else if (config_.lb_algorithm == "consistent_hash") {
+        lb_ = std::make_unique<ConsistentHashLoadBalancer>();
     } else {
         lb_ = std::make_unique<RoundRobinLoadBalancer>();
     }

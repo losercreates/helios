@@ -18,6 +18,13 @@ public:
     // Must return nullptr if no backends are eligible.
     [[nodiscard]] virtual std::shared_ptr<Backend> SelectBackend() noexcept = 0;
     
+    // Key-based selection mechanism for session affinity / consistent hashing.
+    // By default, this falls back to the stateless selection algorithm.
+    [[nodiscard]] virtual std::shared_ptr<Backend> SelectBackendByKey(uint64_t hash_key) noexcept {
+        (void)hash_key;
+        return SelectBackend();
+    }
+    
     // State Queries
     [[nodiscard]] virtual std::vector<std::shared_ptr<Backend>> GetAllBackends() const = 0;
     [[nodiscard]] virtual size_t GetBackendCount() const noexcept = 0;

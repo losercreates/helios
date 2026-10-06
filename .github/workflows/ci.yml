@@ -85,8 +85,16 @@ jobs:
 
       - name: Build Project
         run: |
-          cmake --build build-sanitizer --parallel
+          if [ "${{ matrix.sanitizer }}" = "TSAN" ]; then
+            setarch x86_64 --addr-no-randomize cmake --build build-sanitizer --parallel
+          else
+            cmake --build build-sanitizer --parallel
+          fi
 
       - name: Run Tests with Sanitizers
         run: |
-          ctest --test-dir build-sanitizer --output-on-failure
+          if [ "${{ matrix.sanitizer }}" = "TSAN" ]; then
+            setarch x86_64 --addr-no-randomize ctest --test-dir build-sanitizer --output-on-failure
+          else
+            ctest --test-dir build-sanitizer --output-on-failure
+          fi
