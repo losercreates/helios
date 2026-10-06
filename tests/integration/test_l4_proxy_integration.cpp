@@ -637,3 +637,91 @@ TEST_F(L4ProxyIntegrationTest, BackendDrainingStateAndConnectionLifecycle) {
     close(fd3);
     StopProxyLoop();
 }
+
+// 12. Backend Health Lifecycle Validation
+TEST_F(L4ProxyIntegrationTest, BackendHealthTransitionsAndTrafficRouting) {
+    TestTcpBackend backend1;
+    TestTcpBackend backend2;
+    ASSERT_TRUE(backend1.Start());
+    ASSERT_TRUE(backend2.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.lb_algorithm = "round_robin";
+    L4ProxyServer proxy(config);
+    
+    auto b1 = std::make_shared<Backend>(1, "127.0.0.1", backend1.GetPort());
+    auto b2 = std::make_shared<Backend>(2, "127.0.0.1", backend2.GetPort());
+    
+    b1->SetHealthThresholds(2, 2); // 2 fails -> unhealthy, 2 success -> healthy
+    b2->SetHealthThresholds(2, 2);
+
+    proxy.GetLoadBalancer().AddBackend(b1);
+    proxy.GetLoadBalancer().AddBackend(b2);
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    sockaddr_in target_addr{};
+    ASSERT_TRUE(SocketUtils::ParseSockAddr("127.0.0.1", proxy.GetPort(), &target_addr));
+
+    // Connect Client 1 -> Should go to b1 (round robin)
+    int fd1 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_EQ(connect(fd1, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(b1->GetActiveConnections(), 1u);
+    EXPECT_EQ(b2->GetActiveConnections(), 0u);
+
+    // Fail b1
+    b1->ReportHealthCheckResult(HealthCheckResult::ConnectionFailure);
+    EXPECT_EQ(b1->GetHealthState(), HealthState::Healthy); // still healthy
+    EXPECT_TRUE(b1->IsEligible());
+
+    b1->ReportHealthCheckResult(HealthCheckResult::ConnectionFailure);
+    EXPECT_EQ(b1->GetHealthState(), HealthState::Unhealthy); // now unhealthy
+    EXPECT_FALSE(b1->IsEligible());
+
+    // Connect Client 2 -> Should go to b2, bypassing b1
+    int fd2 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_EQ(connect(fd2, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(b2->GetActiveConnections(), 1u); // routed to b2
+    
+    // Existing connection on b1 should still work
+    std::string ping = "Ping";
+    send(fd1, ping.data(), ping.size(), 0);
+    char buf[32]{};
+    recv(fd1, buf, sizeof(buf), 0);
+    EXPECT_EQ(b1->GetActiveConnections(), 1u); // b1 didn't drop the connection
+
+    // Recover b1
+    b1->ReportHealthCheckResult(HealthCheckResult::Success);
+    EXPECT_EQ(b1->GetHealthState(), HealthState::Recovering);
+    EXPECT_FALSE(b1->IsEligible()); // Still ineligible
+
+    // Client 3 -> Should still go to b2
+    int fd3 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_EQ(connect(fd3, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(b2->GetActiveConnections(), 2u);
+
+    // Final recovery success
+    b1->ReportHealthCheckResult(HealthCheckResult::Success);
+    EXPECT_EQ(b1->GetHealthState(), HealthState::Healthy);
+    EXPECT_TRUE(b1->IsEligible());
+
+    // Client 4 -> Should go to b1 now since it's eligible and it's b1's turn in round-robin
+    int fd4 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_EQ(connect(fd4, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    
+    EXPECT_EQ(b1->GetActiveConnections(), 2u); // 1 old + 1 new
+    
+    close(fd1);
+    close(fd2);
+    close(fd3);
+    close(fd4);
+    StopProxyLoop();
+}

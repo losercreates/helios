@@ -8,6 +8,7 @@ add_executable(helios_unit_tests
     test_weighted_round_robin.cpp
     test_least_connections.cpp
     test_consistent_hash.cpp
+    test_health_management.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
