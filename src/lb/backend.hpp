@@ -3,6 +3,7 @@
 #include <string>
 #include <netinet/in.h>
 #include <cstdint>
+#include <atomic>
 
 namespace helios {
 
@@ -43,10 +44,10 @@ private:
     
     uint32_t weight_;
     
-    bool eligible_{true};
-    bool draining_{false};
+    std::atomic<bool> eligible_{true};
+    std::atomic<bool> draining_{false};
     
-    uint32_t active_connections_{0};
+    std::atomic<uint32_t> active_connections_{0};
 };
 
 } // namespace helios

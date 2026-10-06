@@ -110,6 +110,6 @@ cmake --build build-release -j$(nproc)
 ## Verification Summary
 
 * **Unit Tests**: 58 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`, `WeightedRoundRobinTest.*`, `LeastConnectionsTest.*`, `ConsistentHashTest.*`).
-* **Integration Tests**: 32 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`).
+* **Integration Tests**: 33 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`).
 * **E2E & Stress Tests**: 6 advanced tests passing (`e2e_test_e2e`, `e2e_test_data_integrity`, `e2e_test_backpressure`, `e2e_test_connection_lifecycle`, `e2e_test_fault_injection`, `stress_test_multi_conn`).
-* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (96/96 total CTest tests passing).
+* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (97/97 total CTest tests passing).

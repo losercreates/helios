@@ -557,3 +557,83 @@ TEST_F(L4ProxyIntegrationTest, LeastConnectionsDistribution) {
 
     StopProxyLoop();
 }
+
+// 11. Backend Draining Lifecycle Validation
+TEST_F(L4ProxyIntegrationTest, BackendDrainingStateAndConnectionLifecycle) {
+    TestTcpBackend backend1;
+    TestTcpBackend backend2;
+    ASSERT_TRUE(backend1.Start());
+    ASSERT_TRUE(backend2.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.lb_algorithm = "round_robin";
+    L4ProxyServer proxy(config);
+    
+    auto b1 = std::make_shared<Backend>(1, "127.0.0.1", backend1.GetPort());
+    auto b2 = std::make_shared<Backend>(2, "127.0.0.1", backend2.GetPort());
+    
+    proxy.GetLoadBalancer().AddBackend(b1);
+    proxy.GetLoadBalancer().AddBackend(b2);
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    sockaddr_in target_addr{};
+    ASSERT_TRUE(SocketUtils::ParseSockAddr("127.0.0.1", proxy.GetPort(), &target_addr));
+
+    // Connect Client 1 -> Should go to b1 (round robin)
+    int fd1 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fd1, 0);
+    ASSERT_EQ(connect(fd1, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(backend1.GetAcceptedCount(), 1u);
+    EXPECT_EQ(b1->GetActiveConnections(), 1u);
+
+    // Now mark b1 as draining
+    b1->SetDraining(true);
+
+    // Existing connection on b1 should still work (verify data flows)
+    std::string ping = "StillAlive";
+    send(fd1, ping.data(), ping.size(), 0);
+    char buf[32]{};
+    recv(fd1, buf, sizeof(buf), 0);
+    EXPECT_EQ(b1->GetActiveConnections(), 1u); // Should still have the active connection
+
+    // New connection -> Must skip draining b1 and go to b2
+    int fd2 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fd2, 0);
+    ASSERT_EQ(connect(fd2, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(backend2.GetAcceptedCount(), 1u);
+    EXPECT_EQ(b2->GetActiveConnections(), 1u);
+    
+    // Another new connection -> Should still go to b2, never b1
+    int fd3 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fd3, 0);
+    ASSERT_EQ(connect(fd3, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+    
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    EXPECT_EQ(backend2.GetAcceptedCount(), 2u);
+    EXPECT_EQ(b2->GetActiveConnections(), 2u);
+    EXPECT_EQ(backend1.GetAcceptedCount(), 1u); // Did not increase
+
+    // Now close client 1 (which terminates the connection to draining b1)
+    close(fd1);
+    
+    // Allow io_uring to process the close
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    
+    // b1 should now safely hit 0 active connections while draining
+    EXPECT_EQ(b1->GetActiveConnections(), 0u);
+    EXPECT_TRUE(b1->IsDraining());
+    
+    // Once active connections are 0, we can safely remove it from the LB
+    EXPECT_TRUE(proxy.GetLoadBalancer().RemoveBackend(1));
+
+    close(fd2);
+    close(fd3);
+    StopProxyLoop();
+}
