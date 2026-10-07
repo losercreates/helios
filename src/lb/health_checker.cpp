@@ -18,6 +18,23 @@ HealthChecker::HealthChecker(RingEngine& engine, std::shared_ptr<Backend> backen
 
 HealthChecker::~HealthChecker() {
     Stop();
+
+    auto cancel_if_in_flight = [this](OpContext& ctx) {
+        if (ctx.in_flight) {
+            auto cancel_ctx = new OpContext();
+            cancel_ctx->on_complete = [cancel_ctx](const CompletionEvent&) { delete cancel_ctx; };
+            engine_.PrepCancel(&ctx, cancel_ctx);
+        }
+    };
+    cancel_if_in_flight(interval_ctx_);
+    cancel_if_in_flight(connect_ctx_);
+    cancel_if_in_flight(timeout_ctx_);
+    engine_.Submit();
+
+    while (interval_ctx_.in_flight || connect_ctx_.in_flight || timeout_ctx_.in_flight || cancel_connect_ctx_.in_flight) {
+        engine_.SubmitAndWait(1);
+        engine_.ProcessCompletions();
+    }
 }
 
 void HealthChecker::Start() {
@@ -32,11 +49,7 @@ void HealthChecker::Stop() {
 
     CleanupSocket();
     
-    // Note: In a production system we'd safely track OpContext lifetimes until they are fully reaped.
-    // For this implementation, we assume HealthChecker is tied to the server lifetime or we wait for graceful drain.
-    if (interval_ctx_.in_flight) {
-        engine_.PrepCancel(&interval_ctx_, &cancel_connect_ctx_);
-    }
+    // Cancellations are handled in the destructor or by the user.
 }
 
 void HealthChecker::ScheduleInterval() {
