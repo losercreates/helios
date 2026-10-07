@@ -1,4 +1,4 @@
-add_executable(test_stress test_stress.cpp)
+add_executable(test_stress test_stress.cpp test_health_checker_stress.cpp)
 target_link_libraries(test_stress PRIVATE GTest::gtest_main helios_lib helios_test_common)
 target_include_directories(test_stress PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_CURRENT_SOURCE_DIR}/../common)
 

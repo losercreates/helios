@@ -128,6 +128,12 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
 
         for (uint32_t i = 0; i < reaped; ++i) {
             if (!events[i].context) continue;
+            
+            if (events[i].context->on_complete) {
+                events[i].context->on_complete(events[i]);
+                continue;
+            }
+
             auto* pctx = static_cast<ProxyOpContext*>(events[i].context);
 
             if (pctx->role == ProxyOpRole::Accept) {

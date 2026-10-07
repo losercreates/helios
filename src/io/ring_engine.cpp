@@ -118,6 +118,15 @@ bool RingEngine::PrepConnect(int fd, const sockaddr* addr, socklen_t addrlen, Op
     return true;
 }
 
+bool RingEngine::PrepTimeout(struct __kernel_timespec* ts, OpContext* ctx) {
+    struct io_uring_sqe* sqe = GetSqeOrNull();
+    if (!sqe) return false;
+    io_uring_prep_timeout(sqe, ts, 0, 0);
+    ctx->type = OpType::Timeout;
+    TagSqe(sqe, ctx);
+    return true;
+}
+
 bool RingEngine::PrepCancel(OpContext* target_ctx, OpContext* cancel_ctx) {
     struct io_uring_sqe* sqe = GetSqeOrNull();
     if (!sqe) return false;

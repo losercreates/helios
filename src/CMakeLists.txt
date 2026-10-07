@@ -14,6 +14,7 @@ add_library(helios_lib STATIC
     lb/weighted_round_robin.cpp
     lb/least_connections.cpp
     lb/consistent_hash.cpp
+    lb/health_checker.cpp
 )
 
 target_include_directories(helios_lib PUBLIC
