@@ -2,7 +2,7 @@
 
 **Feature Branch**: `001-helios-initial-spec`  
 **Created**: 2026-09-19  
-**Status**: Draft  
+**Status**: Active / In Progress (L4 Proxy, LB Algorithms, Health & Circuit Breaker Completed)  
 **Input**: User description: "Create the initial product specification for Helios."
 
 ---
@@ -142,6 +142,14 @@ As a backend developer, I want Helios to parse HTTP/1.1 requests, route requests
 - **FR-012**: System MUST enforce an explicit configurable upper limit on maximum concurrent connections per worker thread.
 - **FR-013**: System MUST track active byte counts and fixed buffer checkout levels per worker, pausing downstream socket read SQEs and multishot accept SQEs when buffer pool utilization hits 100%, resuming when utilization drops below 80%.
 - **FR-014**: System MUST enforce configurable idle connection timeouts, downstream read/write timeouts, upstream backend connect/response timeouts, and half-close fallback timeouts (default 5.0s).
+
+### Unified Backend Selection & Lifecycle Policy
+- **FR-015 (Deterministic 4-Tier Selection Precedence)**: Before routing every new client connection, the load balancer MUST evaluate backend eligibility according to a strict 4-tier precedence hierarchy:
+  1. Administrative Draining (`!IsDraining()`)
+  2. Administrative Eligibility (`IsAdministrativelyEligible()`)
+  3. Active Health State (`GetHealthState() == HealthState::Healthy`)
+  4. Circuit Breaker Request Admission (`circuit_breaker_.CanAttemptRequest()`)
+- **FR-016 (Connection Lifecycle Preservation During Draining)**: When a backend transitions to draining, unhealthy, or circuit open, established active client connections MUST NOT be force-closed; only new connection admissions are prohibited, allowing existing sessions to finish gracefully.
 
 ---
 

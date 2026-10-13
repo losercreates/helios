@@ -157,42 +157,94 @@ stateDiagram-v2
 
 ---
 
-### 2.5 BackendPool & BackendEndpoint (`helios::BackendEndpoint`)
-Upstream destination management and health tracking.
+### 2.5 Backend & CircuitBreaker (`helios::Backend`, `helios::CircuitBreaker`)
+Upstream destination management, health tracking, circuit breaking, and traffic gating.
 
 ```cpp
 enum class HealthState : uint8_t {
     Healthy,
-    Degraded,
-    Unhealthy
+    Unhealthy,
+    Recovering
 };
 
-struct BackendEndpoint {
-    std::string ip_address;
-    uint16_t port;
-    uint32_t weight{1};
-    
-    // Dynamic operational state
-    std::atomic<uint32_t> active_connections{0};
-    HealthState health_state{HealthState::Healthy};
-    uint32_t consecutive_failures{0};
-    uint64_t next_probe_timestamp_ms{0};
-    
-    // Latency tracking
-    uint64_t total_requests{0};
-    uint64_t total_errors{0};
+enum class HealthCheckResult : uint8_t {
+    Success,
+    ConnectionFailure,
+    Timeout,
+    ProtocolFailure
 };
 
-class BackendPool {
-    std::vector<BackendEndpoint> endpoints_;
-    LoadBalancingAlgorithm algorithm_{LoadBalancingAlgorithm::RoundRobin};
-    uint32_t rr_index_{0};
-    
+enum class CircuitState : uint8_t {
+    Closed,   // Normal traffic allowed; failures are recorded
+    Open,     // Traffic rejected during cooldown interval
+    HalfOpen  // Limited probe requests allowed after cooldown
+};
+
+struct CircuitBreakerConfig {
+    uint32_t failure_threshold{3};
+    uint32_t success_threshold{1};
+    std::chrono::milliseconds cooldown{5000};
+    uint32_t half_open_max_probes{1};
+};
+
+class CircuitBreaker {
+    CircuitBreakerConfig config_;
+    std::atomic<CircuitState> state_{CircuitState::Closed};
+    std::atomic<uint32_t> consecutive_failures_{0};
+    std::atomic<uint32_t> half_open_active_probes_{0};
+    std::atomic<TimePoint> last_state_change_;
+
 public:
-    BackendEndpoint* SelectBackend(const ClientRequest& req);
-    void ReportResult(BackendEndpoint* endpoint, bool success, uint64_t rtt_us);
+    CircuitState GetState() const noexcept;
+    bool CanAttemptRequest() const noexcept;
+    bool AllowRequest() noexcept;
+    void ReportSuccess() noexcept;
+    void ReportFailure() noexcept;
+    void Reset() noexcept;
+    void Trip() noexcept;
+};
+
+class Backend {
+    uint32_t id_;
+    std::string host_;
+    uint16_t port_;
+    sockaddr_in addr_{};
+    uint32_t weight_{1};
+
+    std::atomic<bool> eligible_{true};
+    std::atomic<bool> draining_{false};
+    std::atomic<uint32_t> active_connections_{0};
+
+    std::atomic<HealthState> health_state_{HealthState::Healthy};
+    std::atomic<uint32_t> consecutive_failures_{0};
+    std::atomic<uint32_t> consecutive_successes_{0};
+    uint32_t failure_threshold_{3};
+    uint32_t recovery_threshold_{3};
+
+    CircuitBreaker circuit_breaker_;
+
+public:
+    // Deterministic 4-tier traffic precedence evaluation:
+    // 1. Draining: !IsDraining()
+    // 2. Administrative Eligibility: IsAdministrativelyEligible()
+    // 3. Health State: GetHealthState() == HealthState::Healthy
+    // 4. Circuit Breaker: circuit_breaker_.CanAttemptRequest()
+    bool CanAcceptNewTraffic() const noexcept;
+    bool IsEligible() const noexcept;
+    bool IsDraining() const noexcept;
+    void SetDraining(bool draining) noexcept;
+    void IncrementActiveConnections() noexcept;
+    void DecrementActiveConnections() noexcept;
+    void ReportHealthCheckResult(HealthCheckResult result) noexcept;
 };
 ```
+
+- **Invariants & Deterministic Precedence**:
+  - **Tier 1 (Administrative Draining)**: A draining backend (`IsDraining() == true`) NEVER receives new client traffic; existing connections drain gracefully.
+  - **Tier 2 (Administrative Eligibility)**: Inactive backends (`IsAdministrativelyEligible() == false`) are bypassed immediately.
+  - **Tier 3 (Active Health State)**: Backends must have transitioned to `HealthState::Healthy` after completing configured consecutive successful probes.
+  - **Tier 4 (Circuit Breaker Protection)**: The circuit breaker must be `Closed` or in `HalfOpen` state with an available probe slot (`CanAttemptRequest() == true`).
+  - **Connection Preservation**: Changes in health state or circuit breaker tripping NEVER forcefully terminate established, active client connections.
 
 ---
 

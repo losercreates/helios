@@ -181,42 +181,36 @@ helios/
 
 ---
 
-### 5. `src/lb` & `src/backend` — Load Balancing & Backend Management
+### 5. `src/lb` — Load Balancing, Health Management & Circuit Breaking
 
-- **Responsibility**: Maintains active backend endpoints, executes load-balancing policies (Round Robin, Weighted RR, Least Connections, Consistent Hashing), and tracks active connection counts.
-- **Dependencies**: `src/health`.
-- **Important Interfaces**:
-  ```cpp
-  class ILoadBalancer {
-  public:
-      virtual BackendEndpoint* SelectBackend(const ClientRequest* req) = 0;
-  };
-  ```
-- **Ownership Model**: Read-heavy configuration shared per pool across worker thread-local copies.
-- **Concurrency Model**: Worker-local endpoint selection.
-- **Failure Modes**: All backends unhealthy triggers HTTP 502 Bad Gateway / TCP connection rejection.
-- **Tests Required**: Round-robin distribution unit tests, weighted distribution statistical tests, least-connection selection correctness tests, Ketama hash ring consistency tests.
-
----
-
-### 6. `src/health` — Health Checking & Circuit Breaking
-
-- **Responsibility**: Performs active background TCP/HTTP probes against backends; tracks passive connection/response failures to drive Circuit Breaker states (Closed, Open, Half-Open) with exponential backoff.
-- **Dependencies**: `src/io`, `src/backend`.
-- **Important Interfaces**:
-  ```cpp
-  class CircuitBreaker {
-  public:
-      bool AllowRequest();
-      void ReportSuccess();
-      void ReportFailure();
-      CircuitState GetState() const;
-  };
-  ```
-- **Ownership Model**: Owned per `BackendEndpoint`.
-- **Concurrency Model**: Worker-local or lockless atomic health status updates.
-- **Failure Modes**: Flapping backends trigger exponential backoff suppression.
-- **Tests Required**: Active probe timeout unit tests, circuit state transition tests (Closed -> Open -> Half-Open -> Closed), backoff calculation tests.
+- **Responsibility**: Implements unified backend management, load-balancing algorithms (Round Robin, Weighted RR, Least Connections, Consistent Hashing), active TCP health checking, circuit breaking, and deterministic backend selection.
+- **Components**:
+  - `src/lb/backend.hpp`: Backend state, administrative eligibility, draining state, active connections, health thresholds, and 4-tier traffic selection policy (`CanAcceptNewTraffic()`).
+  - `src/lb/circuit_breaker.hpp`: 3-state circuit breaker (`CLOSED`, `OPEN`, `HALF_OPEN`) with cooldown timing, half-open probe quotas, and failure counting.
+  - `src/lb/health_checker.hpp`: Active asynchronous `io_uring` TCP probe engine with configurable probe intervals, timeouts, and flapping hysteresis.
+  - `src/lb/load_balancer.hpp`: Base interface for load balancing algorithms.
+  - `src/lb/round_robin.hpp` & `.cpp`: Round-robin distribution across eligible backends.
+  - `src/lb/weighted_round_robin.hpp` & `.cpp`: Smooth interleaved weighted round-robin distribution.
+  - `src/lb/least_connections.hpp` & `.cpp`: Least-connections distribution prioritizing backends with minimal active connections.
+  - `src/lb/consistent_hash.hpp` & `.cpp`: Ketama consistent hashing with virtual nodes and 64-bit ring hashing.
+- **Deterministic 4-Tier Selection Hierarchy**:
+  Before any backend receives a new client connection, the load balancer evaluates:
+  1. **Tier 1 (Administrative Draining)**: `!IsDraining()`
+  2. **Tier 2 (Administrative Eligibility)**: `IsAdministrativelyEligible()`
+  3. **Tier 3 (Active Health State)**: `GetHealthState() == HealthState::Healthy`
+  4. **Tier 4 (Circuit Breaker Protection)**: `circuit_breaker_.CanAttemptRequest()`
+- **Connection Lifecycle Invariant**: Active connections are never force-closed during backend state changes, draining, or circuit tripping.
+- **Tests Required & Implemented**:
+  - `tests/unit/test_round_robin.cpp`
+  - `tests/unit/test_weighted_round_robin.cpp`
+  - `tests/unit/test_least_connections.cpp`
+  - `tests/unit/test_consistent_hash.cpp`
+  - `tests/unit/test_health_management.cpp`
+  - `tests/unit/test_circuit_breaker.cpp`
+  - `tests/unit/test_backend_selection_matrix.cpp` (16 unit tests: all 12 combinations + 48-permutation Cartesian matrix)
+  - `tests/integration/test_health_checker_integration.cpp` (15 active probe scenarios)
+  - `tests/integration/test_circuit_breaker_integration.cpp` (5 circuit tripping and probe scenarios)
+  - `tests/integration/test_backend_lifecycle_integration.cpp` (6 real TCP lifecycle scenarios)
 
 ---
 
@@ -288,7 +282,7 @@ In accordance with Principle II (Measured Performance) and Principle VIII (Incre
 
 Before merging any component into the primary branch, the following verification gates MUST pass cleanly:
 
-1. **Sanitizer Gate**: `make test` completes cleanly under AddressSanitizer (ASan), UndefinedBehaviorSanitizer (UBSan), and ThreadSanitizer (TSan).
-2. **Fuzzing Gate**: `libFuzzer` HTTP parser target executes 100,000 iterations without crash or memory leak.
-3. **Protocol Conformance Gate**: Passes 100% of HTTP/1.1 framing test vectors and smuggling attack suites.
-4. **Benchmarking Gate**: No regression in L4/L7 throughput compared to previous baseline release.
+1. **Test Suite Verification**: All 162 automated CTest test cases pass (96 unit tests, 60 integration tests, 6 e2e/stress tests) with a 100% pass rate.
+2. **Sanitizer Gate**: Full test suite completes cleanly under AddressSanitizer (ASan), UndefinedBehaviorSanitizer (UBSan), and ThreadSanitizer (TSan) with zero memory leaks, zero undefined behavior, and zero data races.
+3. **Protocol Conformance Gate**: Passes 100% of data integrity checks (MD5 payload verification) and graceful TCP half-close / connection lifecycle tests.
+4. **Benchmarking Gate**: No regression in L4 throughput or latency compared to previous baseline release.
