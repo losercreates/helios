@@ -48,7 +48,9 @@ private:
     OpContext interval_ctx_;
     OpContext connect_ctx_;
     OpContext timeout_ctx_;
+    OpContext cancel_interval_ctx_;
     OpContext cancel_connect_ctx_;
+    OpContext cancel_timeout_ctx_;
 
     struct __kernel_timespec interval_ts_{};
     struct __kernel_timespec timeout_ts_{};

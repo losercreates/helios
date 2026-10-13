@@ -94,9 +94,10 @@ ctest --test-dir build-asan --output-on-failure
 
 ### 3. ThreadSanitizer (TSan)
 ```bash
+# On Linux/WSL2, setarch disables ASLR to prevent TSan shadow memory mapping collisions
 cmake -B build-tsan -DCMAKE_BUILD_TYPE=Debug -DHELIOS_ENABLE_TSAN=ON
-cmake --build build-tsan -j$(nproc)
-ctest --test-dir build-tsan --output-on-failure
+setarch x86_64 --addr-no-randomize cmake --build build-tsan -j$(nproc)
+setarch x86_64 --addr-no-randomize ctest --test-dir build-tsan --output-on-failure
 ```
 
 ### 4. Release Build & Benchmarks
@@ -111,6 +112,6 @@ cmake --build build-release -j$(nproc)
 ## Verification Summary
 
 * **Unit Tests**: 66 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`, `WeightedRoundRobinTest.*`, `LeastConnectionsTest.*`, `ConsistentHashTest.*`, `HealthManagementTest.*`).
-* **Integration Tests**: 40 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`, `HealthCheckerIntegrationTest.*`).
-* **E2E & Stress Tests**: 7 advanced tests passing (`e2e_test_e2e`, `e2e_test_data_integrity`, `e2e_test_backpressure`, `e2e_test_connection_lifecycle`, `e2e_test_fault_injection`, `stress_test_multi_conn`).
-* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (113/113 total CTest tests passing).
+* **Integration Tests**: 49 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`, `HealthCheckerIntegrationTest.*`).
+* **E2E & Stress Tests**: 6 advanced tests passing (`e2e_test_e2e`, `e2e_test_data_integrity`, `e2e_test_backpressure`, `e2e_test_connection_lifecycle`, `e2e_test_fault_injection`, `stress_test_multi_conn`).
+* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (**121/121 total CTest tests passing, 100% pass rate**).

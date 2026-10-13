@@ -14,24 +14,16 @@ HealthChecker::HealthChecker(RingEngine& engine, std::shared_ptr<Backend> backen
     interval_ctx_.on_complete = [this](const CompletionEvent& e) { OnIntervalComplete(e); };
     connect_ctx_.on_complete = [this](const CompletionEvent& e) { OnConnectComplete(e); };
     timeout_ctx_.on_complete = [this](const CompletionEvent& e) { OnTimeoutComplete(e); };
+    cancel_interval_ctx_.on_complete = [](const CompletionEvent&) {};
+    cancel_connect_ctx_.on_complete = [](const CompletionEvent&) {};
+    cancel_timeout_ctx_.on_complete = [](const CompletionEvent&) {};
 }
 
 HealthChecker::~HealthChecker() {
     Stop();
 
-    auto cancel_if_in_flight = [this](OpContext& ctx) {
-        if (ctx.in_flight) {
-            auto cancel_ctx = new OpContext();
-            cancel_ctx->on_complete = [cancel_ctx](const CompletionEvent&) { delete cancel_ctx; };
-            engine_.PrepCancel(&ctx, cancel_ctx);
-        }
-    };
-    cancel_if_in_flight(interval_ctx_);
-    cancel_if_in_flight(connect_ctx_);
-    cancel_if_in_flight(timeout_ctx_);
-    engine_.Submit();
-
-    while (interval_ctx_.in_flight || connect_ctx_.in_flight || timeout_ctx_.in_flight || cancel_connect_ctx_.in_flight) {
+    while (interval_ctx_.in_flight || connect_ctx_.in_flight || timeout_ctx_.in_flight ||
+           cancel_interval_ctx_.in_flight || cancel_connect_ctx_.in_flight || cancel_timeout_ctx_.in_flight) {
         engine_.SubmitAndWait(1);
         engine_.ProcessCompletions();
     }
@@ -47,9 +39,24 @@ void HealthChecker::Stop() {
     if (!running_) return;
     running_ = false;
 
+    if (interval_ctx_.in_flight && !cancel_interval_ctx_.in_flight) {
+        if (engine_.PrepCancel(&interval_ctx_, &cancel_interval_ctx_)) {
+            cancel_interval_ctx_.MarkInFlight();
+        }
+    }
+    if (connect_ctx_.in_flight && !cancel_connect_ctx_.in_flight) {
+        if (engine_.PrepCancel(&connect_ctx_, &cancel_connect_ctx_)) {
+            cancel_connect_ctx_.MarkInFlight();
+        }
+    }
+    if (timeout_ctx_.in_flight && !cancel_timeout_ctx_.in_flight) {
+        if (engine_.PrepCancel(&timeout_ctx_, &cancel_timeout_ctx_)) {
+            cancel_timeout_ctx_.MarkInFlight();
+        }
+    }
+    engine_.Submit();
+
     CleanupSocket();
-    
-    // Cancellations are handled in the destructor or by the user.
 }
 
 void HealthChecker::ScheduleInterval() {
@@ -101,11 +108,13 @@ void HealthChecker::StartCheck() {
 }
 
 void HealthChecker::OnConnectComplete(const CompletionEvent& event) {
-    if (connect_finished_) return;
+    if (!running_ || connect_finished_ || event.result == -ECANCELED) return;
     connect_finished_ = true;
     
-    if (timeout_ctx_.in_flight) {
-        engine_.PrepCancel(&timeout_ctx_, &cancel_connect_ctx_);
+    if (timeout_ctx_.in_flight && !cancel_timeout_ctx_.in_flight) {
+        if (engine_.PrepCancel(&timeout_ctx_, &cancel_timeout_ctx_)) {
+            cancel_timeout_ctx_.MarkInFlight();
+        }
     }
     
     if (event.IsSuccess()) {
@@ -116,11 +125,13 @@ void HealthChecker::OnConnectComplete(const CompletionEvent& event) {
 }
 
 void HealthChecker::OnTimeoutComplete(const CompletionEvent& event) {
-    if (connect_finished_ || event.result == -ECANCELED) return;
+    if (!running_ || connect_finished_ || event.result == -ECANCELED) return;
     connect_finished_ = true;
     
-    if (connect_ctx_.in_flight) {
-        engine_.PrepCancel(&connect_ctx_, &cancel_connect_ctx_);
+    if (connect_ctx_.in_flight && !cancel_connect_ctx_.in_flight) {
+        if (engine_.PrepCancel(&connect_ctx_, &cancel_connect_ctx_)) {
+            cancel_connect_ctx_.MarkInFlight();
+        }
     }
     
     CompleteCheck(HealthCheckResult::Timeout);
