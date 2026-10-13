@@ -25,7 +25,8 @@ enum class ProxyOpRole : uint8_t {
     ClientRead,
     BackendWrite,
     BackendRead,
-    ClientWrite
+    ClientWrite,
+    Cancel
 };
 
 struct ProxyOpContext : public OpContext {
@@ -39,6 +40,7 @@ public:
     struct Config {
         std::string listen_host{"127.0.0.1"};
         uint16_t listen_port{8080};
+        bool reuse_port{false};
         size_t ring_entries{512};
         size_t total_buffers{1024};
         size_t buffer_size{16384};
@@ -64,13 +66,21 @@ public:
     // Initialization & Lifecycle
     bool Start();
     void Stop();
+    void CloseListener();
 
     // Single-threaded event loop iteration
     int RunOnce(std::chrono::milliseconds timeout = std::chrono::milliseconds(10));
 
     // Accessors
+    void SetListenPort(uint16_t port) noexcept { config_.listen_port = port; }
     [[nodiscard]] uint16_t GetPort() const noexcept { return listener_.GetPort(); }
-    [[nodiscard]] size_t GetActiveConnectionCount() const noexcept { return connections_.size(); }
+    [[nodiscard]] size_t GetActiveConnectionCount() const noexcept {
+        return active_connections_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] uint64_t GetTotalAcceptedConnections() const noexcept {
+        return total_accepted_connections_.load(std::memory_order_relaxed);
+    }
+    [[nodiscard]] TcpListener& GetListener() noexcept { return listener_; }
     [[nodiscard]] BufferPool& GetBufferPool() noexcept { return buffer_pool_; }
     [[nodiscard]] RingEngine& GetEngine() noexcept { return engine_; }
     [[nodiscard]] bool IsRunning() const noexcept { return running_; }
@@ -126,8 +136,11 @@ private:
     uint64_t next_conn_id_{1};
     bool running_{false};
     bool accept_in_flight_{false};
+    std::atomic<uint64_t> total_accepted_connections_{0};
+    std::atomic<size_t> active_connections_{0};
 
     ProxyOpContext accept_ctx_;
+    ProxyOpContext cancel_accept_ctx_;
     sockaddr_in accept_client_addr_{};
     socklen_t accept_client_addr_len_{sizeof(sockaddr_in)};
 

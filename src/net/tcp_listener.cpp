@@ -15,18 +15,18 @@ TcpListener::~TcpListener() {
 TcpListener::TcpListener(TcpListener&& other) noexcept
     : engine_(other.engine_),
       fd_(other.fd_),
-      port_(other.port_) {
+      port_(other.port_.load(std::memory_order_relaxed)) {
     other.fd_ = -1;
-    other.port_ = 0;
+    other.port_.store(0, std::memory_order_relaxed);
 }
 
 TcpListener& TcpListener::operator=(TcpListener&& other) noexcept {
     if (this != &other) {
         Close();
         fd_ = other.fd_;
-        port_ = other.port_;
+        port_.store(other.port_.load(std::memory_order_relaxed), std::memory_order_relaxed);
         other.fd_ = -1;
-        other.port_ = 0;
+        other.port_.store(0, std::memory_order_relaxed);
     }
     return *this;
 }
@@ -42,9 +42,9 @@ bool TcpListener::BindAndListen(const char* host, uint16_t port, int backlog, bo
     sockaddr_in addr{};
     socklen_t len = sizeof(addr);
     if (::getsockname(fd_, reinterpret_cast<sockaddr*>(&addr), &len) == 0) {
-        port_ = ntohs(addr.sin_port);
+        port_.store(ntohs(addr.sin_port), std::memory_order_relaxed);
     } else {
-        port_ = port;
+        port_.store(port, std::memory_order_relaxed);
     }
 
     return true;
@@ -59,7 +59,7 @@ void TcpListener::Close() noexcept {
     if (fd_ >= 0) {
         ::close(fd_);
         fd_ = -1;
-        port_ = 0;
+        port_.store(0, std::memory_order_relaxed);
     }
 }
 

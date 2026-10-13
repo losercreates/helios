@@ -46,7 +46,7 @@ void L4ProxyServer::AddBackend(std::string host, uint16_t port, uint32_t weight)
 bool L4ProxyServer::Start() {
     if (running_) return true;
 
-    if (!listener_.BindAndListen(config_.listen_host.c_str(), config_.listen_port)) {
+    if (!listener_.BindAndListen(config_.listen_host.c_str(), config_.listen_port, 128, config_.reuse_port)) {
         return false;
     }
 
@@ -55,11 +55,20 @@ bool L4ProxyServer::Start() {
     return true;
 }
 
+void L4ProxyServer::CloseListener() {
+    listener_.Close();
+    if (accept_in_flight_) {
+        cancel_accept_ctx_.role = ProxyOpRole::Cancel;
+        engine_.PrepCancel(&accept_ctx_, &cancel_accept_ctx_);
+        engine_.Submit();
+    }
+}
+
 void L4ProxyServer::Stop() {
     if (!running_) return;
 
     running_ = false;
-    listener_.Close();
+    CloseListener();
 
     // Initiate close on all active connections
     std::vector<uint64_t> conn_ids;
@@ -113,6 +122,7 @@ void L4ProxyServer::Stop() {
     }
 
     connections_.clear();
+    active_connections_.store(0, std::memory_order_relaxed);
 }
 
 int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
@@ -168,7 +178,7 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
 }
 
 void L4ProxyServer::ScheduleAccept() {
-    if (accept_in_flight_ || !running_) return;
+    if (accept_in_flight_ || !running_ || !listener_.IsListening()) return;
 
     // Pause accept if buffer pool high watermark reached or exhausted
     if (buffer_pool_.IsHighWatermarkReached() || buffer_pool_.IsExhausted()) {
@@ -193,6 +203,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     }
 
     int client_fd = event.result;
+    total_accepted_connections_.fetch_add(1, std::memory_order_relaxed);
     auto backend = lb_->SelectBackend();
     if (!backend) {
         // No backend available
@@ -222,6 +233,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
 
     conn->SetCleanupCallback([this](uint64_t id) {
         connections_.erase(id);
+        active_connections_.fetch_sub(1, std::memory_order_relaxed);
     });
 
     auto data = std::make_unique<ConnectionStateData>();
@@ -252,6 +264,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     engine_.Submit();
 
     connections_[conn_id] = std::move(data);
+    active_connections_.fetch_add(1, std::memory_order_relaxed);
 
     ScheduleAccept();
 }

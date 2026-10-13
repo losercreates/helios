@@ -5,6 +5,7 @@
 #include "socket_utils.hpp"
 #include <netinet/in.h>
 #include <string>
+#include <atomic>
 
 namespace helios {
 
@@ -32,14 +33,14 @@ public:
     void Close() noexcept;
 
     [[nodiscard]] int GetFd() const noexcept { return fd_; }
-    [[nodiscard]] uint16_t GetPort() const noexcept { return port_; }
+    [[nodiscard]] uint16_t GetPort() const noexcept { return port_.load(std::memory_order_relaxed); }
     [[nodiscard]] std::string GetEndpoint() const { return SocketUtils::GetLocalEndpoint(fd_); }
     [[nodiscard]] bool IsListening() const noexcept { return fd_ >= 0; }
 
 private:
     RingEngine& engine_;
     int fd_{-1};
-    uint16_t port_{0};
+    std::atomic<uint16_t> port_{0};
 };
 
 } // namespace helios
