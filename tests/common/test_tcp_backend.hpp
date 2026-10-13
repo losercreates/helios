@@ -43,6 +43,11 @@ public:
         getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
         port_ = ntohs(addr.sin_port);
 
+        struct timeval tv{};
+        tv.tv_sec = 0;
+        tv.tv_usec = 20000; // 20ms timeout so worker thread exits accept() cleanly on stop
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+
         if (listen(fd, 128) < 0) {
             close(fd);
             return false;

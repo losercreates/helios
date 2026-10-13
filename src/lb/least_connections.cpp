@@ -28,7 +28,7 @@ std::shared_ptr<Backend> LeastConnectionsLoadBalancer::SelectBackend() noexcept 
     uint32_t min_connections = UINT32_MAX;
 
     for (const auto& backend : backends_) {
-        if (!backend->IsEligible() || backend->IsDraining()) {
+        if (!backend->CanAcceptNewTraffic()) {
             continue;
         }
 

@@ -29,7 +29,7 @@ std::shared_ptr<Backend> WeightedRoundRobinLoadBalancer::SelectBackend() noexcep
 
     for (auto& state : backends_) {
         auto& b = state.backend;
-        if (!b->IsEligible() || b->IsDraining()) {
+        if (!b->CanAcceptNewTraffic()) {
             continue;
         }
 

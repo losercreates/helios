@@ -34,7 +34,7 @@ std::shared_ptr<Backend> RoundRobinLoadBalancer::SelectBackend() noexcept {
     for (size_t i = 0; i < count; ++i) {
         size_t idx = (next_index_ + i) % count;
         auto& backend = backends_[idx];
-        if (backend->IsEligible() && !backend->IsDraining()) {
+        if (backend->CanAcceptNewTraffic()) {
             next_index_ = (idx + 1) % count;
             return backend;
         }

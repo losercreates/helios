@@ -33,7 +33,7 @@ std::shared_ptr<Backend> ConsistentHashLoadBalancer::SelectBackend() noexcept {
     for (size_t i = 0; i < count; ++i) {
         size_t idx = (rr_index_ + i) % count;
         auto& backend = backends_[idx];
-        if (backend->IsEligible() && !backend->IsDraining()) {
+        if (backend->CanAcceptNewTraffic()) {
             rr_index_ = (idx + 1) % count;
             return backend;
         }
@@ -59,7 +59,7 @@ std::shared_ptr<Backend> ConsistentHashLoadBalancer::SelectBackendByKey(uint64_t
     size_t checked_vnodes = 0;
     while (checked_vnodes < ring_.size()) {
         auto backend = it->second;
-        if (backend->IsEligible() && !backend->IsDraining()) {
+        if (backend->CanAcceptNewTraffic()) {
             return backend;
         }
 

@@ -7,6 +7,7 @@ add_executable(helios_integration_tests
     test_l4_proxy_integration.cpp
     test_health_checker_integration.cpp
     test_circuit_breaker_integration.cpp
+    test_backend_lifecycle_integration.cpp
 )
 
 target_compile_definitions(helios_integration_tests PRIVATE

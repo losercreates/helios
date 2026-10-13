@@ -10,6 +10,7 @@ add_executable(helios_unit_tests
     test_consistent_hash.cpp
     test_health_management.cpp
     test_circuit_breaker.cpp
+    test_backend_selection_matrix.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
