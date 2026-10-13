@@ -201,6 +201,12 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
         return;
     }
 
+    if (!backend->GetCircuitBreaker().AllowRequest()) {
+        ::close(client_fd);
+        ScheduleAccept();
+        return;
+    }
+
     sockaddr_in backend_addr = backend->GetSockAddr();
 
     int backend_fd = SocketUtils::CreateTcpSocket();
@@ -252,11 +258,25 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
 
 void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const CompletionEvent& event) {
     auto conn = data.conn;
+    auto backend = data.backend;
 
-    if (event.result < 0 || conn->IsDraining()) {
+    if (event.result < 0) {
+        if (backend) {
+            backend->ReportConnectionFailure();
+        }
         conn->InitiateClose("Backend connect failed");
         conn->DecrementPendingCqe();
         return;
+    }
+
+    if (conn->IsDraining()) {
+        conn->InitiateClose("Proxy draining");
+        conn->DecrementPendingCqe();
+        return;
+    }
+
+    if (backend) {
+        backend->ReportConnectionSuccess();
     }
 
     conn->TransitionTo(ConnectionState::Established);

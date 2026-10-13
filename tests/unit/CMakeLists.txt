@@ -9,6 +9,7 @@ add_executable(helios_unit_tests
     test_least_connections.cpp
     test_consistent_hash.cpp
     test_health_management.cpp
+    test_circuit_breaker.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
