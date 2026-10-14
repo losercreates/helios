@@ -107,7 +107,7 @@
 - [x] T037 [P] Implement CPU affinity binding (`pthread_setaffinity_np`) and worker thread isolation in `src/worker.hpp` and `src/worker.cpp`
 - [x] T038 [P] Implement `SO_REUSEPORT` multi-worker listening socket distribution in `src/net/listener.hpp` and `src/net/listener.cpp`
 - [x] T039 [P] Implement zero-copy HTTP/1.1 streaming parser and RFC 9112 request smuggling validator in `src/http/http_parser.hpp`
-- [ ] T040 [P] Implement HTTP keep-alive connection pooling in `src/backend/backend_pool.hpp`
+- [x] T040 [P] Implement HTTP keep-alive connection pooling in `src/backend/backend_pool.hpp`
 - [ ] T041 [P] Build parallel 1:1 `epoll` baseline proxy in `tests/benchmarks/epoll_baseline.cpp`
 - [ ] T042 [P] Create comparative Google Benchmark suite (Helios io_uring vs epoll) in `tests/benchmarks/bench_proxy.cpp`
 - [ ] T043 [P] Implement Prometheus `/metrics` telemetry endpoint in `src/metrics/prometheus_server.cpp`
