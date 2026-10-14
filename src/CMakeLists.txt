@@ -18,6 +18,7 @@ add_library(helios_lib STATIC
     lb/consistent_hash.cpp
     lb/health_checker.cpp
     lb/circuit_breaker.cpp
+    http/http_parser.cpp
 )
 
 target_include_directories(helios_lib PUBLIC
@@ -26,6 +27,7 @@ target_include_directories(helios_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/buffer
     ${CMAKE_CURRENT_SOURCE_DIR}/net
     ${CMAKE_CURRENT_SOURCE_DIR}/lb
+    ${CMAKE_CURRENT_SOURCE_DIR}/http
 )
 
 target_link_libraries(helios_lib PUBLIC

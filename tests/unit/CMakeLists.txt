@@ -11,6 +11,7 @@ add_executable(helios_unit_tests
     test_health_management.cpp
     test_circuit_breaker.cpp
     test_backend_selection_matrix.cpp
+    test_http_parser.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
