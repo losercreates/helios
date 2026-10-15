@@ -87,6 +87,7 @@ private:
     void CloseConnection(uint64_t conn_id);
     void UpdateEpollInterest(int fd, uint32_t events);
     void Cleanup() noexcept;
+    void CleanupLocked() noexcept;
 
     Config config_;
     BufferPool buffer_pool_;

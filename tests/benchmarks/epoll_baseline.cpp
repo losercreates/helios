@@ -165,6 +165,8 @@ void EpollBaselineProxy::Stop() noexcept {
         return;
     }
 
+    std::lock_guard<std::mutex> lock(state_mutex_);
+
     // Wake up epoll_wait if blocked
     int s_fd = stop_event_fd_.load(std::memory_order_relaxed);
     if (s_fd >= 0) {
@@ -173,9 +175,9 @@ void EpollBaselineProxy::Stop() noexcept {
     }
 
     // If Run() is active on another thread, that thread will invoke Cleanup() upon loop exit.
-    // If no runner thread is active, clean up directly.
+    // If no runner thread is active, clean up directly under the already held state_mutex_.
     if (runner_thread_id_.load(std::memory_order_acquire) == std::thread::id{}) {
-        Cleanup();
+        CleanupLocked();
     }
 }
 
@@ -190,7 +192,10 @@ void EpollBaselineProxy::Run() {
 
 void EpollBaselineProxy::Cleanup() noexcept {
     std::lock_guard<std::mutex> lock(state_mutex_);
+    CleanupLocked();
+}
 
+void EpollBaselineProxy::CleanupLocked() noexcept {
     int l_fd = listen_fd_.exchange(-1, std::memory_order_acq_rel);
     int ep_fd = epoll_fd_.load(std::memory_order_relaxed);
 
