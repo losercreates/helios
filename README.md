@@ -48,6 +48,9 @@ helios/
 │   │   └── consistent_hash.hpp/.cpp# Consistent Hashing (virtual nodes) selector
 │   ├── http/                   # L7 HTTP/1.1 protocol parsing & security validation
 │   │   └── http_parser.hpp/.cpp# Zero-copy streaming HTTP/1.1 parser & RFC 9112 request smuggling validator
+│   ├── metrics/                # Lock-free telemetry & Prometheus HTTP exposition
+│   │   ├── metrics_collector.hpp/.cpp# Thread-isolated lock-free worker metrics & registry
+│   │   └── prometheus_server.hpp/.cpp# Standalone HTTP telemetry server (GET /metrics, GET /healthz)
 │   └── net/                    # Linux non-blocking TCP networking primitives
 │       ├── socket_utils.hpp/.cpp# Non-blocking socket helpers & address parsing
 │       ├── listener.hpp/.cpp   # Multi-socket listener configuration (SO_REUSEPORT)
@@ -56,11 +59,11 @@ helios/
 │       ├── connection_pair.hpp/.cpp# ConnectionPair state machine & half-close timer
 │       └── l4_proxy_server.hpp/.cpp# Single-threaded L4 TCP reverse proxy engine
 ├── tests/
-│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair, test_buffer_pool, test_round_robin, test_weighted_round_robin, test_least_connections, test_consistent_hash, test_health_management, test_circuit_breaker, test_backend_selection_matrix, test_http_parser, test_backend_pool)
+│   ├── unit/                   # GoogleTest unit test suites (test_foundation, test_ring_engine, test_tcp_net, test_connection_pair, test_buffer_pool, test_round_robin, test_weighted_round_robin, test_least_connections, test_consistent_hash, test_health_management, test_circuit_breaker, test_backend_selection_matrix, test_http_parser, test_backend_pool, test_prometheus_server)
 │   ├── integration/            # Real kernel I/O & TCP tests (test_ring_engine_integration, test_tcp_net_integration, test_connection_pair_integration, test_buffer_lifecycle_integration, test_l4_proxy_integration, test_health_checker_integration, test_circuit_breaker_integration, test_multi_worker)
 │   ├── e2e/                    # End-to-end tests validating the entire proxy with mock clients and servers
 │   ├── stress/                 # Multi-connection storm stress tests for memory leaks and concurrency bugs
-│   └── benchmarks/             # Google Benchmark suites (bench_foundation)
+│   └── benchmarks/             # Comparative Google Benchmark suites (bench_proxy, epoll_baseline)
 └── .github/
     └── workflows/ci.yml        # GitHub Actions CI matrix (Debug, Release, ASan, UBSan, TSan)
 ```
@@ -120,8 +123,9 @@ cmake --build build-release -j$(nproc)
 
 ## Verification Summary
 
-* **Unit Tests**: 152 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`, `WeightedRoundRobinTest.*`, `LeastConnectionsTest.*`, `ConsistentHashTest.*`, `HealthManagementTest.*`, `CircuitBreakerTest.*`, `BackendSelectionMatrixTest.*`, `HttpParserStandardRequests.*`, `HttpParserRequestSmugglingRejection.*`, `HttpParserChunkedTransferEncoding.*`, `HttpParserPartialStreamReassembly.*`, `BackendPoolAcquisitionAndRelease.*`, `BackendPoolCapacityLimitsAndEviction.*`, `BackendPoolIdleTimeoutReaping.*`, `BackendPoolHealthStatePurge.*`, `EpollBaselineTest.*`).
+* **Unit Tests**: 159 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`, `WeightedRoundRobinTest.*`, `LeastConnectionsTest.*`, `ConsistentHashTest.*`, `HealthManagementTest.*`, `CircuitBreakerTest.*`, `BackendSelectionMatrixTest.*`, `HttpParserStandardRequests.*`, `HttpParserRequestSmugglingRejection.*`, `HttpParserChunkedTransferEncoding.*`, `HttpParserPartialStreamReassembly.*`, `BackendPoolAcquisitionAndRelease.*`, `BackendPoolCapacityLimitsAndEviction.*`, `BackendPoolIdleTimeoutReaping.*`, `BackendPoolHealthStatePurge.*`, `EpollBaselineTest.*`, `PrometheusMetricsTest.*`, `PrometheusServerTest.*`).
 * **Integration Tests**: 64 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`, `HealthCheckerIntegrationTest.*`, `CircuitBreakerIntegrationTest.*`, `BackendLifecycleIntegrationTest.*`, `MultiWorkerIntegrationTest.*`).
 * **E2E & Stress Tests**: 6 advanced tests passing (`e2e_test_e2e`, `e2e_test_data_integrity`, `e2e_test_backpressure`, `e2e_test_connection_lifecycle`, `e2e_test_fault_injection`, `stress_test_multi_conn`).
 * **Comparative Benchmarks**: Full Google Benchmark comparative suite in `tests/benchmarks/bench_proxy.cpp` validating Hypothesis H-1 (throughput across 1K-64K payload tiers, concurrency across 1-64 clients, and round-trip ping-pong turnaround between `L4ProxyServer` and `EpollBaselineProxy`).
-* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (**222/222 total CTest tests passing, 100% pass rate**).
+* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (**229/229 total CTest tests passing, 100% pass rate**).
+* **Telemetry**: Prometheus text exposition endpoint (`GET /metrics`) compliant with Prometheus 0.0.4 plaintext standard and `GET /healthz` endpoint with non-blocking event-driven HTTP server.

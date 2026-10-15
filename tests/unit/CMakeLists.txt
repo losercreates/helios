@@ -14,6 +14,7 @@ add_executable(helios_unit_tests
     test_http_parser.cpp
     test_backend_pool.cpp
     test_epoll_baseline.cpp
+    test_prometheus_server.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE

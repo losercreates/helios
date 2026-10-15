@@ -110,4 +110,4 @@
 - [x] T040 [P] Implement HTTP keep-alive connection pooling in `src/backend/backend_pool.hpp`
 - [x] T041 [P] Build parallel 1:1 `epoll` baseline proxy in `tests/benchmarks/epoll_baseline.cpp`
 - [x] T042 [P] Create comparative Google Benchmark suite (Helios io_uring vs epoll) in `tests/benchmarks/bench_proxy.cpp`
-- [ ] T043 [P] Implement Prometheus `/metrics` telemetry endpoint in `src/metrics/prometheus_server.cpp`
+- [x] T043 [P] Implement Prometheus `/metrics` telemetry endpoint in `src/metrics/prometheus_server.cpp`

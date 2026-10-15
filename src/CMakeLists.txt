@@ -20,6 +20,8 @@ add_library(helios_lib STATIC
     lb/circuit_breaker.cpp
     http/http_parser.cpp
     backend/backend_pool.cpp
+    metrics/metrics_collector.cpp
+    metrics/prometheus_server.cpp
 )
 
 target_include_directories(helios_lib PUBLIC
@@ -30,6 +32,7 @@ target_include_directories(helios_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/lb
     ${CMAKE_CURRENT_SOURCE_DIR}/http
     ${CMAKE_CURRENT_SOURCE_DIR}/backend
+    ${CMAKE_CURRENT_SOURCE_DIR}/metrics
 )
 
 target_link_libraries(helios_lib PUBLIC
