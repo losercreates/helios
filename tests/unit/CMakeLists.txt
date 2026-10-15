@@ -15,6 +15,7 @@ add_executable(helios_unit_tests
     test_backend_pool.cpp
     test_epoll_baseline.cpp
     test_prometheus_server.cpp
+    test_config_loader.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
@@ -25,6 +26,10 @@ target_link_libraries(helios_unit_tests PRIVATE
     gtest
     gtest_main
     uring
+)
+
+target_compile_definitions(helios_unit_tests PRIVATE
+    HELIOS_TEST_CONFIG_DIR="${CMAKE_SOURCE_DIR}/config"
 )
 
 include(GoogleTest)

@@ -216,26 +216,84 @@ helios/
 
 ### 7. `src/config` & `src/metrics` — Configuration & Observability
 
-- **Responsibility**: Loads and validates declarative YAML configuration files; collects thread-local operational metrics and exposes a Prometheus `/metrics` endpoint.
-- **Dependencies**: Standard library, YAML parser library (`yaml-cpp`).
-- **Important Interfaces**:
+- **Responsibility**: Loads, parses, and validates declarative YAML configuration files; configures worker pools and reverse proxy engines; collects thread-isolated operational metrics and exposes a Prometheus `/metrics` endpoint.
+- **Dependencies**: Standard library only (zero external dependency bloat; complies with `-Wall -Wextra -Werror -Wpedantic` and strict sanitizer builds).
+- **Important Interfaces & Data Structures**:
   ```cpp
+  namespace helios {
+
+  struct ServerConfig {
+      std::string host{"0.0.0.0"};
+      uint16_t port{8080};
+      size_t workers{0}; // 0 = hardware concurrency
+      bool cpu_affinity{true};
+      size_t max_connections{10000};
+      size_t buffer_pool_blocks{1024};
+      size_t buffer_block_size{16384};
+      size_t io_uring_entries{512};
+  };
+
+  struct BackendEndpointConfig {
+      std::string host{"127.0.0.1"};
+      uint16_t port{9001};
+      uint32_t weight{1};
+  };
+
+  struct BackendPoolConfig {
+      std::string name{"default_pool"};
+      std::string algorithm{"round_robin"};
+      std::vector<BackendEndpointConfig> endpoints;
+  };
+
+  struct TimeoutsConfig {
+      std::chrono::milliseconds idle_timeout{30000};
+      std::chrono::milliseconds header_read_timeout{5000};
+      std::chrono::milliseconds connect_timeout{2000};
+      std::chrono::milliseconds half_close_fallback{5000};
+      std::chrono::milliseconds drain_timeout{15000};
+  };
+
+  struct HealthCheckConfig {
+      bool enabled{false};
+      std::chrono::milliseconds interval{5000};
+      std::chrono::milliseconds timeout{1000};
+      uint32_t unhealthy_threshold{3};
+      uint32_t healthy_threshold{2};
+  };
+
+  struct MetricsConfig {
+      bool enabled{true};
+      uint16_t port{9090};
+      std::string path{"/metrics"};
+  };
+
+  struct HeliosConfig {
+      ServerConfig server;
+      std::vector<BackendPoolConfig> backend_pools;
+      TimeoutsConfig timeouts;
+      HealthCheckConfig health_check;
+      MetricsConfig metrics;
+  };
+
+  struct ConfigResult {
+      bool success{false};
+      HeliosConfig config;
+      std::string error_message;
+  };
+
   class ConfigLoader {
   public:
-      static ConfigResult LoadFromFile(const std::string& path);
+      static ConfigResult LoadFromFile(const std::string& filepath);
+      static ConfigResult LoadFromString(const std::string& yaml_content);
+      static bool Validate(const HeliosConfig& config, std::string& error_message);
   };
-  
-  class MetricsCollector {
-  public:
-      void RecordRequest(uint64_t rtt_us);
-      void RecordBytesRead(size_t bytes);
-      std::string RenderPrometheusText() const;
-  };
+
+  } // namespace helios
   ```
-- **Ownership Model**: Config loaded at startup; metrics collected thread-locally per worker.
-- **Concurrency Model**: Lockless thread-local metric counters scraped by background metrics server.
-- **Failure Modes**: Invalid config fields fail startup validation with clear line errors.
-- **Tests Required**: Config schema validation tests, Prometheus text rendering compliance tests.
+- **Ownership Model**: Configuration loaded at startup and immutably distributed into `WorkerPool` and `PrometheusServer`.
+- **Concurrency Model**: Shared-nothing per worker; metrics collected using lock-free atomics and exposed via dedicated background telemetry thread.
+- **Failure Modes**: Missing file, invalid YAML syntax, or schema violations (unrecognized algorithms, zero endpoints, invalid ports) trigger descriptive errors and non-zero exit status without allocating socket resources.
+- **Tests Required**: Full unit test suite (`tests/unit/test_config_loader.cpp`) testing `helios_mvp.yaml`, `helios_production.yaml`, string parsing, invalid fields, and CLI option verification.
 
 ---
 

@@ -121,7 +121,7 @@ TEST(BackendPoolAcquisitionAndRelease, InvalidNegativeFdRejected) {
 
 TEST(BackendPoolCapacityLimitsAndEviction, PerBackendCapacityEvictsOldest) {
     std::vector<int> closed_fds;
-    BackendPoolConfig config;
+    BackendConnectionPoolConfig config;
     config.max_idle_per_backend = 2;
     config.max_total_idle = 100;
 
@@ -157,7 +157,7 @@ TEST(BackendPoolCapacityLimitsAndEviction, PerBackendCapacityEvictsOldest) {
 
 TEST(BackendPoolCapacityLimitsAndEviction, GlobalCapacityEvictsOldestGlobally) {
     std::vector<int> closed_fds;
-    BackendPoolConfig config;
+    BackendConnectionPoolConfig config;
     config.max_idle_per_backend = 10;
     config.max_total_idle = 3;
 
@@ -186,7 +186,7 @@ TEST(BackendPoolCapacityLimitsAndEviction, GlobalCapacityEvictsOldestGlobally) {
 
 TEST(BackendPoolCapacityLimitsAndEviction, ZeroCapacityImmediatelyCloses) {
     std::vector<int> closed_fds;
-    BackendPoolConfig config;
+    BackendConnectionPoolConfig config;
     config.max_idle_per_backend = 0;
     config.max_total_idle = 10;
 
@@ -206,7 +206,7 @@ TEST(BackendPoolCapacityLimitsAndEviction, ZeroCapacityImmediatelyCloses) {
 
 TEST(BackendPoolIdleTimeoutReaping, AcquireDetectsAndClosesExpiredConnection) {
     std::vector<int> closed_fds;
-    BackendPoolConfig config;
+    BackendConnectionPoolConfig config;
     config.idle_timeout = std::chrono::milliseconds(500);
 
     BackendConnectionPool pool(config, [&](int fd) {
@@ -227,7 +227,7 @@ TEST(BackendPoolIdleTimeoutReaping, AcquireDetectsAndClosesExpiredConnection) {
 
 TEST(BackendPoolIdleTimeoutReaping, ReapExpiredConnectionsMethod) {
     std::vector<int> closed_fds;
-    BackendPoolConfig config;
+    BackendConnectionPoolConfig config;
     config.idle_timeout = std::chrono::milliseconds(1000);
 
     BackendConnectionPool pool(config, [&](int fd) {

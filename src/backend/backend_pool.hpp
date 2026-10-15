@@ -11,7 +11,7 @@
 namespace helios {
 
 // Configuration for BackendConnectionPool
-struct BackendPoolConfig {
+struct BackendConnectionPoolConfig {
     size_t max_idle_per_backend{32};
     size_t max_total_idle{1024};
     std::chrono::milliseconds idle_timeout{60000}; // 60 seconds
@@ -28,11 +28,12 @@ struct PooledConnection {
 // Enforces shared-nothing architecture per worker with zero cross-thread locking.
 class BackendConnectionPool {
 public:
+    using Config = BackendConnectionPoolConfig;
     using Clock = std::chrono::steady_clock;
     using TimePoint = Clock::time_point;
     using SocketCloser = std::function<void(int)>;
 
-    explicit BackendConnectionPool(BackendPoolConfig config = {},
+    explicit BackendConnectionPool(BackendConnectionPoolConfig config = {},
                                    SocketCloser closer = nullptr) noexcept;
     ~BackendConnectionPool();
 
@@ -63,14 +64,14 @@ public:
     // Queries
     [[nodiscard]] size_t TotalIdleCount() const noexcept { return total_idle_count_; }
     [[nodiscard]] size_t IdleCountForBackend(uint32_t backend_id) const noexcept;
-    [[nodiscard]] const BackendPoolConfig& GetConfig() const noexcept { return config_; }
-    void SetConfig(BackendPoolConfig config) noexcept { config_ = config; }
+    [[nodiscard]] const BackendConnectionPoolConfig& GetConfig() const noexcept { return config_; }
+    void SetConfig(BackendConnectionPoolConfig config) noexcept { config_ = config; }
 
 private:
     void CloseFd(int fd) noexcept;
     void EvictOldestGlobally();
 
-    BackendPoolConfig config_;
+    BackendConnectionPoolConfig config_;
     SocketCloser closer_;
     size_t total_idle_count_{0};
 

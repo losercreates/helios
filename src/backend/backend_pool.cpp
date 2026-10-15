@@ -4,7 +4,7 @@
 
 namespace helios {
 
-BackendConnectionPool::BackendConnectionPool(BackendPoolConfig config, SocketCloser closer) noexcept
+BackendConnectionPool::BackendConnectionPool(BackendConnectionPoolConfig config, SocketCloser closer) noexcept
     : config_(config), closer_(std::move(closer)) {
 }
 

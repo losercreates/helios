@@ -46,6 +46,8 @@ helios/
 │   │   ├── weighted_round_robin.hpp/.cpp# Smooth Weighted Round-Robin selector
 │   │   ├── least_connections.hpp/.cpp# Least-Connections backend selector
 │   │   └── consistent_hash.hpp/.cpp# Consistent Hashing (virtual nodes) selector
+│   ├── config/                 # Dynamic YAML configuration loader & schema validator
+│   │   └── config_loader.hpp/.cpp # Zero-dependency recursive-descent YAML parser
 │   ├── http/                   # L7 HTTP/1.1 protocol parsing & security validation
 │   │   └── http_parser.hpp/.cpp# Zero-copy streaming HTTP/1.1 parser & RFC 9112 request smuggling validator
 │   ├── metrics/                # Lock-free telemetry & Prometheus HTTP exposition
@@ -123,9 +125,10 @@ cmake --build build-release -j$(nproc)
 
 ## Verification Summary
 
-* **Unit Tests**: 159 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`, `WeightedRoundRobinTest.*`, `LeastConnectionsTest.*`, `ConsistentHashTest.*`, `HealthManagementTest.*`, `CircuitBreakerTest.*`, `BackendSelectionMatrixTest.*`, `HttpParserStandardRequests.*`, `HttpParserRequestSmugglingRejection.*`, `HttpParserChunkedTransferEncoding.*`, `HttpParserPartialStreamReassembly.*`, `BackendPoolAcquisitionAndRelease.*`, `BackendPoolCapacityLimitsAndEviction.*`, `BackendPoolIdleTimeoutReaping.*`, `BackendPoolHealthStatePurge.*`, `EpollBaselineTest.*`, `PrometheusMetricsTest.*`, `PrometheusServerTest.*`).
+* **Unit Tests**: 171 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`, `WeightedRoundRobinTest.*`, `LeastConnectionsTest.*`, `ConsistentHashTest.*`, `HealthManagementTest.*`, `CircuitBreakerTest.*`, `BackendSelectionMatrixTest.*`, `HttpParserStandardRequests.*`, `HttpParserRequestSmugglingRejection.*`, `HttpParserChunkedTransferEncoding.*`, `HttpParserPartialStreamReassembly.*`, `BackendPoolAcquisitionAndRelease.*`, `BackendPoolCapacityLimitsAndEviction.*`, `BackendPoolIdleTimeoutReaping.*`, `BackendPoolHealthStatePurge.*`, `EpollBaselineTest.*`, `PrometheusMetricsTest.*`, `PrometheusServerTest.*`, `ConfigLoaderTest.*`).
 * **Integration Tests**: 64 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`, `HealthCheckerIntegrationTest.*`, `CircuitBreakerIntegrationTest.*`, `BackendLifecycleIntegrationTest.*`, `MultiWorkerIntegrationTest.*`).
 * **E2E & Stress Tests**: 6 advanced tests passing (`e2e_test_e2e`, `e2e_test_data_integrity`, `e2e_test_backpressure`, `e2e_test_connection_lifecycle`, `e2e_test_fault_injection`, `stress_test_multi_conn`).
 * **Comparative Benchmarks**: Full Google Benchmark comparative suite in `tests/benchmarks/bench_proxy.cpp` validating Hypothesis H-1 (throughput across 1K-64K payload tiers, concurrency across 1-64 clients, and round-trip ping-pong turnaround between `L4ProxyServer` and `EpollBaselineProxy`).
-* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (**229/229 total CTest tests passing, 100% pass rate**).
+* **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (**241/241 total CTest tests passing, 100% pass rate**).
+* **Configuration & CLI**: Dynamic YAML configuration loader (`--config`, `-c`), dry-run syntax/schema validation (`--test-config`, `-t`), and daemon runtime lifecycle (`--daemon`, `-d`).
 * **Telemetry**: Prometheus text exposition endpoint (`GET /metrics`) compliant with Prometheus 0.0.4 plaintext standard and `GET /healthz` endpoint with non-blocking event-driven HTTP server.

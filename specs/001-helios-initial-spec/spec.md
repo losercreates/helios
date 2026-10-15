@@ -204,9 +204,20 @@ As a backend developer, I want Helios to parse HTTP/1.1 requests, route requests
 
 ## 12. Configuration Requirements
 
-- **CFG-001 (Declarative File Format)**: System MUST load configuration from a structured file (YAML or JSON) validating all fields upon startup.
-- **CFG-002 (Configuration Schema Validation)**: Invalid configuration options (e.g., negative timeouts, missing backend pools, malformed IP addresses) MUST cause startup validation failure with descriptive error messages.
-- **CFG-003 (Hot Configuration Reload)**: System MUST support reloading backend pool definitions and weights upon receiving `SIGHUP` without dropping active connections.
+- **CFG-001 (Declarative File Format)**: System MUST load configuration from a structured YAML file validating all fields upon startup against `contracts/config-schema.md`.
+- **CFG-002 (Configuration Schema Validation)**: Invalid configuration options (e.g., negative timeouts, missing backend pools, malformed IP addresses, out-of-range ports, unaligned buffer sizes) MUST cause startup validation failure with descriptive error messages.
+- **CFG-003 (Command-Line Arguments & CLI Options)**: The Helios binary MUST support:
+  * `--config <path>`, `-c <path>`: Path to declarative YAML configuration file.
+  * `--daemon`, `-d`: Run proxy and telemetry servers indefinitely in the foreground until interrupted by `SIGINT` or `SIGTERM`.
+  * `--test-config`, `-t`: Parse and validate the specified YAML configuration without binding network sockets, exiting with code `0` on success or code `1` on error.
+  * `--help`, `-h`: Display formatted CLI usage, supported arguments, and exit.
+  * `--version`, `-v`: Display binary version, C++ standard, and exit.
+- **CFG-004 (Runtime Subsystem Wiring)**: Validated configuration parameters MUST programmatically drive:
+  * Worker concurrency count, CPU affinity binding (`pthread_setaffinity_np`), and `io_uring` ring depth.
+  * Memory allocator buffer pool dimensions (`buffer_pool_blocks`, `buffer_block_size`).
+  * Backend target endpoints, algorithm selection (`round_robin`, `weighted_round_robin`, `least_connections`, `consistent_hash`), and connection timeouts.
+  * Prometheus HTTP telemetry server (`PrometheusServer`) port and endpoint routing.
+- **CFG-005 (Safe Defaults & Self-Validation)**: When no `--config` flag is specified, Helios MUST fall back to a safe default configuration (localhost `:8080` forwarding to `:9001` with telemetry on `:9090`) to maintain seamless local development and automated CI execution.
 
 ---
 

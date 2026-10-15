@@ -111,3 +111,12 @@
 - [x] T041 [P] Build parallel 1:1 `epoll` baseline proxy in `tests/benchmarks/epoll_baseline.cpp`
 - [x] T042 [P] Create comparative Google Benchmark suite (Helios io_uring vs epoll) in `tests/benchmarks/bench_proxy.cpp`
 - [x] T043 [P] Implement Prometheus `/metrics` telemetry endpoint in `src/metrics/prometheus_server.cpp`
+
+---
+
+## Phase 10: Production Operations & Dynamic Configuration
+
+**Goal**: Declarative YAML configuration loading, strict schema validation, Prometheus telemetry wiring, and production CLI entrypoint.
+
+- [x] T044 [P] Implement dynamic YAML configuration loader, schema validator, and CLI entrypoint in `src/config/config_loader.hpp`, `src/config/config_loader.cpp`, and `src/main.cpp`
+
