@@ -10,6 +10,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 
 namespace helios {
@@ -48,7 +49,7 @@ public:
         tv.tv_usec = 20000; // 20ms timeout so worker thread exits accept() cleanly on stop
         setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
 
-        if (listen(fd, 128) < 0) {
+        if (listen(fd, 1024) < 0) {
             close(fd);
             return false;
         }
@@ -115,13 +116,42 @@ private:
             std::lock_guard<std::mutex> lock(clients_mutex_);
             active_clients_.push_back(client_fd);
             client_threads_.emplace_back([this, client_fd]() {
-                std::array<char, 8192> buf{};
-                while (true) {
+                // Clear the 20ms accept timeout on accepted connection so active streaming connections don't drop
+                struct timeval tv_conn{};
+                tv_conn.tv_sec = 10;
+                tv_conn.tv_usec = 0;
+                setsockopt(client_fd, SOL_SOCKET, SO_RCVTIMEO, &tv_conn, sizeof(tv_conn));
+                setsockopt(client_fd, SOL_SOCKET, SO_SNDTIMEO, &tv_conn, sizeof(tv_conn));
+
+                int opt = 1;
+                setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt));
+
+                std::array<char, 16384> buf{};
+                while (running_) {
                     ssize_t bytes_read = recv(client_fd, buf.data(), buf.size(), 0);
-                    if (bytes_read <= 0) break;
+                    if (bytes_read == 0) break;
+                    if (bytes_read < 0) {
+                        if (errno == EINTR) continue;
+                        if ((errno == EAGAIN || errno == EWOULDBLOCK) && running_) continue;
+                        break;
+                    }
                     echo_count_++;
-                    ssize_t bytes_sent = send(client_fd, buf.data(), static_cast<size_t>(bytes_read), 0);
-                    if (bytes_sent <= 0) break;
+
+                    size_t total_sent = 0;
+                    bool write_failed = false;
+                    while (total_sent < static_cast<size_t>(bytes_read)) {
+                        ssize_t bytes_sent = send(client_fd, buf.data() + total_sent,
+                                                  static_cast<size_t>(bytes_read) - total_sent, MSG_NOSIGNAL);
+                        if (bytes_sent <= 0) {
+                            if (bytes_sent < 0 && (errno == EINTR || ((errno == EAGAIN || errno == EWOULDBLOCK) && running_))) {
+                                continue;
+                            }
+                            write_failed = true;
+                            break;
+                        }
+                        total_sent += static_cast<size_t>(bytes_sent);
+                    }
+                    if (write_failed) break;
                 }
                 shutdown(client_fd, SHUT_RDWR);
                 close(client_fd);

@@ -111,7 +111,9 @@ setarch x86_64 --addr-no-randomize ctest --test-dir build-tsan --output-on-failu
 ```bash
 cmake -B build-release -DCMAKE_BUILD_TYPE=Release
 cmake --build build-release -j$(nproc)
-./build-release/bin/helios_benchmarks
+
+# Run full comparative benchmark suite (Helios io_uring vs Linux epoll baseline)
+./build-release/bin/helios_benchmarks --benchmark_filter=".*Proxy.*"
 ```
 
 ---
@@ -121,4 +123,5 @@ cmake --build build-release -j$(nproc)
 * **Unit Tests**: 152 unit tests passing (`FoundationTest.*`, `RingEngineUnitTest.*`, `TcpNetUnitTest.*`, `ConnectionPairUnitTest.*`, `BufferPoolUnitTest.*`, `RoundRobinTest.*`, `WeightedRoundRobinTest.*`, `LeastConnectionsTest.*`, `ConsistentHashTest.*`, `HealthManagementTest.*`, `CircuitBreakerTest.*`, `BackendSelectionMatrixTest.*`, `HttpParserStandardRequests.*`, `HttpParserRequestSmugglingRejection.*`, `HttpParserChunkedTransferEncoding.*`, `HttpParserPartialStreamReassembly.*`, `BackendPoolAcquisitionAndRelease.*`, `BackendPoolCapacityLimitsAndEviction.*`, `BackendPoolIdleTimeoutReaping.*`, `BackendPoolHealthStatePurge.*`, `EpollBaselineTest.*`).
 * **Integration Tests**: 64 integration tests passing (`FoundationIntegrationTest.*`, `RingEngineIntegrationTest.*`, `TcpNetIntegrationTest.*`, `ConnectionPairIntegrationTest.*`, `BufferLifecycleIntegrationTest.*`, `L4ProxyIntegrationTest.*`, `HealthCheckerIntegrationTest.*`, `CircuitBreakerIntegrationTest.*`, `BackendLifecycleIntegrationTest.*`, `MultiWorkerIntegrationTest.*`).
 * **E2E & Stress Tests**: 6 advanced tests passing (`e2e_test_e2e`, `e2e_test_data_integrity`, `e2e_test_backpressure`, `e2e_test_connection_lifecycle`, `e2e_test_fault_injection`, `stress_test_multi_conn`).
+* **Comparative Benchmarks**: Full Google Benchmark comparative suite in `tests/benchmarks/bench_proxy.cpp` validating Hypothesis H-1 (throughput across 1K-64K payload tiers, concurrency across 1-64 clients, and round-trip ping-pong turnaround between `L4ProxyServer` and `EpollBaselineProxy`).
 * **Sanitizers**: Passed cleanly under AddressSanitizer, UndefinedBehaviorSanitizer, and ThreadSanitizer with zero memory leaks, undefined behavior, or data races (**222/222 total CTest tests passing, 100% pass rate**).

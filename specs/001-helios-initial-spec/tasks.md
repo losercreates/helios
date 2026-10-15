@@ -109,5 +109,5 @@
 - [x] T039 [P] Implement zero-copy HTTP/1.1 streaming parser and RFC 9112 request smuggling validator in `src/http/http_parser.hpp`
 - [x] T040 [P] Implement HTTP keep-alive connection pooling in `src/backend/backend_pool.hpp`
 - [x] T041 [P] Build parallel 1:1 `epoll` baseline proxy in `tests/benchmarks/epoll_baseline.cpp`
-- [ ] T042 [P] Create comparative Google Benchmark suite (Helios io_uring vs epoll) in `tests/benchmarks/bench_proxy.cpp`
+- [x] T042 [P] Create comparative Google Benchmark suite (Helios io_uring vs epoll) in `tests/benchmarks/bench_proxy.cpp`
 - [ ] T043 [P] Implement Prometheus `/metrics` telemetry endpoint in `src/metrics/prometheus_server.cpp`
