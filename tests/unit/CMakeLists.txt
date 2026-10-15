@@ -13,10 +13,12 @@ add_executable(helios_unit_tests
     test_backend_selection_matrix.cpp
     test_http_parser.cpp
     test_backend_pool.cpp
+    test_epoll_baseline.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
     helios_lib
+    helios_epoll_baseline
     helios_compiler_flags
     helios_sanitizers
     gtest
