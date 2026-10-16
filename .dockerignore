@@ -1,0 +1,17 @@
+# Build directories & caches
+build/
+build-*/
+.cache/
+
+# Version control & agent metadata
+.git/
+.github/
+.agents/
+.specify/
+
+# Documentation & specifications
+docs/
+specs/
+fuzz/
+*.md
+LICENSE

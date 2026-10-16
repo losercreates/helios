@@ -3,6 +3,7 @@
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
+#include <netdb.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <cstring>
@@ -93,7 +94,23 @@ bool SocketUtils::ParseSockAddr(const char* host, uint16_t port, sockaddr_in* ad
         return true;
     }
 
-    return ::inet_pton(AF_INET, host, &addr->sin_addr) == 1;
+    if (::inet_pton(AF_INET, host, &addr->sin_addr) == 1) {
+        return true;
+    }
+
+    // Fallback: Resolve hostname (e.g. Docker service names or DNS domains)
+    struct addrinfo hints{};
+    hints.ai_family = AF_INET;
+    hints.ai_socktype = SOCK_STREAM;
+    struct addrinfo* res = nullptr;
+    if (::getaddrinfo(host, nullptr, &hints, &res) == 0 && res != nullptr) {
+        auto* ipv4 = reinterpret_cast<struct sockaddr_in*>(res->ai_addr);
+        addr->sin_addr = ipv4->sin_addr;
+        ::freeaddrinfo(res);
+        return true;
+    }
+
+    return false;
 }
 
 std::string SocketUtils::FormatEndpoint(const sockaddr_in& addr) {

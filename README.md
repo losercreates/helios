@@ -138,7 +138,59 @@ Helios supports 4 pluggable, deterministic backend distribution strategies:
 
 ## 🛠 Quickstart
 
-### Prerequisites (Linux / WSL2)
+### 🐳 Instant Docker Sandbox (Recommended)
+
+Run a complete multi-container demonstration environment featuring **Helios**, two isolated upstream HTTP backends, and a **Prometheus** scraper in seconds:
+
+```bash
+# Clone the repository
+git clone https://github.com/losercreates/helios.git
+cd helios
+
+# Start the full demonstration stack
+docker compose up -d
+
+# Verify load-balanced traffic (alternates round-robin between backend1 & backend2)
+curl http://localhost:8080
+
+# Query Helios live Prometheus telemetry
+curl http://localhost:9090/metrics
+curl http://localhost:9090/healthz
+
+# Access Prometheus Web UI
+# Open http://localhost:9091 in your browser
+
+# Tear down the stack
+docker compose down
+```
+
+> [!NOTE]
+> Since Helios leverages native Linux `io_uring` ring queues, container runtimes require unconfined seccomp profiles (`security_opt: [seccomp:unconfined]`) and unlimited locked memory (`ulimits: memlock: -1`). These are pre-configured in [docker-compose.yml](file:///home/mayukh/projects/helios/docker-compose.yml).
+
+---
+
+### 📦 Build Docker Container Image
+
+Build a minimal (~33 MB), hardened multi-stage production container image with an unprivileged system user and `cap_net_bind_service` capabilities:
+
+```bash
+# Build production Docker image
+docker build -t helios:latest .
+
+# Run with custom configuration
+docker run --rm -it \
+  --security-opt seccomp=unconfined \
+  --ulimit memlock=-1:-1 \
+  -p 8080:8080 -p 9090:9090 \
+  -v $(pwd)/config/docker_demo.yaml:/etc/helios/helios.yaml:ro \
+  helios:latest -c /etc/helios/helios.yaml --daemon
+```
+
+---
+
+### ⚙️ Build from Source (Linux / WSL2)
+
+#### Prerequisites
 
 Helios requires a Linux environment with kernel 5.19+ and a modern C++20 toolchain:
 
@@ -152,19 +204,15 @@ sudo apt update && sudo apt install -y \
   liburing-dev
 ```
 
-### Build from Source
+#### Compile in Release Mode
 
 ```bash
-# Clone the repository
-git clone https://github.com/losercreates/helios.git
-cd helios
-
 # Configure and compile in Release mode
 cmake -B build-release -DCMAKE_BUILD_TYPE=Release -G Ninja
 cmake --build build-release -j$(nproc)
 ```
 
-### Validate Configuration
+#### Validate Configuration
 
 Before launching Helios, validate your YAML configuration syntax and semantic constraints:
 
@@ -173,14 +221,14 @@ Before launching Helios, validate your YAML configuration syntax and semantic co
 # Output: [HELIOS] Configuration file syntax and schema validation successful.
 ```
 
-### Run Helios
+#### Run Helios
 
 ```bash
 # Start Helios in daemon mode with production configuration
 ./build-release/bin/helios -c config/helios_production.yaml --daemon
 ```
 
-### Query Live Telemetry
+#### Query Live Telemetry
 
 ```bash
 # Query Prometheus metrics
@@ -188,6 +236,34 @@ curl -i http://localhost:9090/metrics
 
 # Query healthz endpoint
 curl -i http://localhost:9090/healthz
+```
+
+---
+
+### 🛡️ Production `systemd` Service Deployment
+
+For bare-metal and VM production environments, deploy Helios as a hardened system service using the provided systemd unit:
+
+```bash
+# 1. Install binary and configuration
+sudo cp build-release/bin/helios /usr/local/bin/
+sudo mkdir -p /etc/helios
+sudo cp config/helios_production.yaml /etc/helios/helios.yaml
+
+# 2. Create unprivileged helios system user
+sudo useradd -r -s /usr/sbin/nologin -d /var/empty helios
+
+# 3. Grant low port binding capability (<1024)
+sudo setcap 'cap_net_bind_service=+ep' /usr/local/bin/helios
+
+# 4. Install and start systemd service
+sudo cp packaging/systemd/helios.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now helios
+
+# Check service status and operational journal
+systemctl status helios
+journalctl -u helios -f
 ```
 
 ---

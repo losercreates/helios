@@ -1,0 +1,53 @@
+[Unit]
+Description=Helios Linux io_uring Reverse Proxy & Load Balancer
+Documentation=https://github.com/losercreates/helios
+After=network.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=helios
+Group=helios
+
+# Executable invocation
+ExecStart=/usr/local/bin/helios --config /etc/helios/helios.yaml --daemon
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Graceful restart and termination
+Restart=always
+RestartSec=3s
+KillSignal=SIGTERM
+TimeoutStopSec=20s
+
+# High-performance kernel limits for io_uring and TCP sockets
+LimitNOFILE=1048576
+LimitMEMLOCK=infinity
+LimitNPROC=65536
+
+# Security hardening and least-privilege capabilities
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+NoNewPrivileges=true
+
+# Filesystem & device isolation
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# Process & memory sandboxing
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+MemoryDenyWriteExecute=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
