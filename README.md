@@ -228,6 +228,23 @@ Before launching Helios, validate your YAML configuration syntax and semantic co
 ./build-release/bin/helios -c config/helios_production.yaml --daemon
 ```
 
+#### 🔄 Zero-Downtime Configuration Hot-Reload
+
+Update backend endpoints, topology, or weights on the fly without restarting Helios or dropping in-flight client connections:
+
+```bash
+# 1. Edit configuration file (e.g., config/helios_production.yaml)
+# 2. Trigger hot reload via SIGHUP
+kill -HUP $(pgrep helios)
+
+# Or when deployed via systemd:
+sudo systemctl reload helios
+
+# Or within Docker Compose:
+docker kill -s HUP helios-proxy
+```
+Helios re-validates the YAML file, reconciles backends across all pinned worker event loops, gracefully drains removed endpoints, and updates routing with zero downtime.
+
 #### Query Live Telemetry
 
 ```bash

@@ -9,6 +9,8 @@
 #include <memory>
 #include <tuple>
 #include <chrono>
+#include <functional>
+#include <mutex>
 
 namespace helios {
 
@@ -49,6 +51,7 @@ public:
 
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
     void SetListenPort(uint16_t port) noexcept;
+    void Post(std::function<void()> task);
 
     [[nodiscard]] uint32_t GetWorkerId() const noexcept { return worker_id_; }
     [[nodiscard]] int GetCoreId() const noexcept { return core_id_; }
@@ -78,12 +81,23 @@ private:
     std::atomic<bool> stop_requested_{false};
     std::atomic<bool> affinity_set_{false};
     std::atomic<bool> listener_closed_{false};
+
+    std::mutex task_mutex_;
+    std::vector<std::function<void()>> pending_tasks_;
+    std::atomic<bool> has_tasks_{false};
+
     std::thread thread_;
 };
 
 // Orchestrates a pool of Worker instances pinned across CPU cores.
 class WorkerPool {
 public:
+    struct BackendInfo {
+        std::string host;
+        uint16_t port{80};
+        uint32_t weight{1};
+    };
+
     explicit WorkerPool(WorkerPoolConfig config);
     ~WorkerPool();
 
@@ -91,6 +105,7 @@ public:
     WorkerPool& operator=(const WorkerPool&) = delete;
 
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
+    void ReloadBackends(const std::vector<BackendInfo>& new_backends);
 
     bool Start();
     void Stop();

@@ -1,6 +1,7 @@
 #include <gtest/gtest.h>
 #include "worker.hpp"
 #include "net/socket_utils.hpp"
+#include "config/config_loader.hpp"
 #include "../common/test_tcp_backend.hpp"
 
 #include <thread>
@@ -9,6 +10,7 @@
 #include <string>
 #include <atomic>
 #include <memory>
+#include <fstream>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -270,4 +272,155 @@ TEST(MultiWorkerIntegrationTest, MultiWorkerCoordinatedDrainAndShutdown) {
     // Wait for all workers to finish draining and join
     pool.Join();
     EXPECT_EQ(pool.GetTotalActiveConnections(), 0u);
+}
+
+// 5. MultiWorkerDynamicBackendHotReload: Verify dynamic zero-downtime hot reloading of backends
+TEST(MultiWorkerIntegrationTest, MultiWorkerDynamicBackendHotReload) {
+    TestTcpBackend backend1;
+    ASSERT_TRUE(backend1.Start());
+
+    TestTcpBackend backend2;
+    ASSERT_TRUE(backend2.Start());
+
+    WorkerPoolConfig config;
+    config.num_workers = 2;
+    config.listen_port = 0;
+    config.lb_algorithm = "round_robin";
+
+    WorkerPool pool(config);
+    // Start with ONLY backend1
+    pool.AddBackend("127.0.0.1", backend1.GetPort(), 1);
+    ASSERT_TRUE(pool.Start());
+
+    uint16_t proxy_port = pool.GetPort();
+    ASSERT_GT(proxy_port, 0);
+
+    // Send 10 requests: 100% must go to backend1
+    for (int i = 0; i < 10; ++i) {
+        std::string resp;
+        ASSERT_TRUE(SendEchoRequest(proxy_port, "req1", &resp));
+        EXPECT_EQ(resp, "req1");
+    }
+    EXPECT_EQ(backend1.GetAcceptedCount(), 10u);
+    EXPECT_EQ(backend2.GetAcceptedCount(), 0u);
+
+    // Dynamically hot-reload backends: now include backend1 AND backend2
+    pool.ReloadBackends({
+        {"127.0.0.1", backend1.GetPort(), 1},
+        {"127.0.0.1", backend2.GetPort(), 1}
+    });
+
+    // Send requests: traffic should now reach backend2 as well
+    backend1.ResetAcceptedCount();
+    backend2.ResetAcceptedCount();
+
+    for (int i = 0; i < 20; ++i) {
+        std::string resp;
+        ASSERT_TRUE(SendEchoRequest(proxy_port, "req2", &resp));
+        EXPECT_EQ(resp, "req2");
+    }
+    EXPECT_GT(backend1.GetAcceptedCount(), 0u);
+    EXPECT_GT(backend2.GetAcceptedCount(), 0u);
+    EXPECT_EQ(backend1.GetAcceptedCount() + backend2.GetAcceptedCount(), 20u);
+
+    // Dynamically hot-reload backends: REMOVE backend1, keep ONLY backend2
+    pool.ReloadBackends({
+        {"127.0.0.1", backend2.GetPort(), 1}
+    });
+
+    backend1.ResetAcceptedCount();
+    backend2.ResetAcceptedCount();
+
+    for (int i = 0; i < 10; ++i) {
+        std::string resp;
+        ASSERT_TRUE(SendEchoRequest(proxy_port, "req3", &resp));
+        EXPECT_EQ(resp, "req3");
+    }
+    EXPECT_EQ(backend1.GetAcceptedCount(), 0u);
+    EXPECT_EQ(backend2.GetAcceptedCount(), 10u);
+
+    pool.Stop();
+}
+
+// 6. SighupHotReloadEndToEnd: Verify end-to-end configuration reload from YAML file
+TEST(MultiWorkerIntegrationTest, SighupHotReloadEndToEnd) {
+    TestTcpBackend backend1;
+    ASSERT_TRUE(backend1.Start());
+
+    TestTcpBackend backend2;
+    ASSERT_TRUE(backend2.Start());
+
+    std::string tmp_yaml = "/tmp/helios_sighup_test_" + std::to_string(getpid()) + ".yaml";
+    auto write_config = [&](uint16_t b1_port, uint16_t b2_port, bool include_b2) {
+        std::ofstream ofs(tmp_yaml);
+        ofs << "server:\n";
+        ofs << "  host: \"127.0.0.1\"\n";
+        ofs << "  port: 0\n";
+        ofs << "  workers: 2\n";
+        ofs << "backend_pools:\n";
+        ofs << "  - name: \"test_pool\"\n";
+        ofs << "    algorithm: \"round_robin\"\n";
+        ofs << "    endpoints:\n";
+        ofs << "      - host: \"127.0.0.1\"\n";
+        ofs << "        port: " << b1_port << "\n";
+        ofs << "        weight: 1\n";
+        if (include_b2) {
+            ofs << "      - host: \"127.0.0.1\"\n";
+            ofs << "        port: " << b2_port << "\n";
+            ofs << "        weight: 1\n";
+        }
+        ofs.close();
+    };
+
+    write_config(backend1.GetPort(), backend2.GetPort(), false);
+
+    auto load_res = ConfigLoader::LoadFromFile(tmp_yaml);
+    ASSERT_TRUE(load_res.success);
+
+    WorkerPool pool(load_res.config.ToWorkerPoolConfig());
+    for (const auto& pool_cfg : load_res.config.backend_pools) {
+        for (const auto& ep : pool_cfg.endpoints) {
+            pool.AddBackend(ep.host, ep.port, ep.weight);
+        }
+    }
+    ASSERT_TRUE(pool.Start());
+    uint16_t proxy_port = pool.GetPort();
+
+    // Verify initial routing: only backend1 receives traffic
+    for (int i = 0; i < 5; ++i) {
+        std::string resp;
+        ASSERT_TRUE(SendEchoRequest(proxy_port, "initial", &resp));
+        EXPECT_EQ(resp, "initial");
+    }
+    EXPECT_EQ(backend1.GetAcceptedCount(), 5u);
+    EXPECT_EQ(backend2.GetAcceptedCount(), 0u);
+
+    // Update the YAML configuration on disk to include backend2
+    write_config(backend1.GetPort(), backend2.GetPort(), true);
+
+    // Re-load configuration from file (routine executed on SIGHUP)
+    auto reload_res = ConfigLoader::LoadFromFile(tmp_yaml);
+    ASSERT_TRUE(reload_res.success);
+
+    std::vector<WorkerPool::BackendInfo> new_endpoints;
+    for (const auto& pool_cfg : reload_res.config.backend_pools) {
+        for (const auto& ep : pool_cfg.endpoints) {
+            new_endpoints.push_back({ep.host, ep.port, ep.weight});
+        }
+    }
+    pool.ReloadBackends(new_endpoints);
+
+    backend1.ResetAcceptedCount();
+    backend2.ResetAcceptedCount();
+
+    // Send requests: verify traffic now routes to backend2 as well
+    for (int i = 0; i < 10; ++i) {
+        std::string resp;
+        ASSERT_TRUE(SendEchoRequest(proxy_port, "reloaded", &resp));
+        EXPECT_EQ(resp, "reloaded");
+    }
+    EXPECT_GT(backend2.GetAcceptedCount(), 0u);
+
+    pool.Stop();
+    std::remove(tmp_yaml.c_str());
 }

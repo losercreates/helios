@@ -35,6 +35,7 @@ public:
     [[nodiscard]] const std::string& GetHost() const noexcept { return host_; }
     [[nodiscard]] uint16_t GetPort() const noexcept { return port_; }
     [[nodiscard]] uint32_t GetWeight() const noexcept { return weight_; }
+    void SetWeight(uint32_t weight) noexcept { weight_ = weight; }
 
     // Pre-parsed sockaddr_in for fast hot-path usage without network/string operations
     [[nodiscard]] const sockaddr_in& GetSockAddr() const noexcept { return addr_; }

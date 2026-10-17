@@ -13,10 +13,14 @@
 
 namespace {
 std::atomic<bool> g_stop_signal{false};
+std::atomic<bool> g_reload_signal{false};
 
 void SignalHandler(int signum) {
-    (void)signum;
-    g_stop_signal.store(true, std::memory_order_relaxed);
+    if (signum == SIGHUP) {
+        g_reload_signal.store(true, std::memory_order_release);
+    } else {
+        g_stop_signal.store(true, std::memory_order_release);
+    }
 }
 
 void PrintUsage(const char* prog_name) {
@@ -73,9 +77,10 @@ int main(int argc, char* argv[]) {
     std::cout << "[HELIOS] Starting " << info.name << " v" << info.version << "\n";
     std::cout << "[HELIOS] Compiled with C++ standard: " << info.cpp_standard << "\n";
 
-    // Setup signal handling for graceful shutdown
+    // Setup signal handling for graceful shutdown & dynamic hot-reload
     std::signal(SIGINT, SignalHandler);
     std::signal(SIGTERM, SignalHandler);
+    std::signal(SIGHUP, SignalHandler);
 
     helios::HeliosConfig config;
 
@@ -147,8 +152,32 @@ int main(int argc, char* argv[]) {
                   << pool.GetWorkerCount() << " workers on port " << pool.GetPort() << "\n";
 
         if (daemon_mode) {
-            std::cout << "[HELIOS] Running in daemon mode. Send SIGINT/SIGTERM to stop.\n";
+            std::cout << "[HELIOS] Running in daemon mode. Send SIGINT/SIGTERM to stop, SIGHUP to reload.\n";
             while (!g_stop_signal.load(std::memory_order_relaxed)) {
+                if (g_reload_signal.exchange(false, std::memory_order_acq_rel)) {
+                    if (config_path.empty()) {
+                        std::cerr << "[HELIOS] Reload ignored: No configuration file specified (running with defaults).\n";
+                    } else {
+                        std::cout << "[HELIOS] SIGHUP received: Reloading configuration from " << config_path << "...\n";
+                        auto res = helios::ConfigLoader::LoadFromFile(config_path);
+                        if (!res.success) {
+                            std::cerr << "[HELIOS] Configuration reload failed: " << res.error_message
+                                      << " - Retaining current configuration.\n";
+                        } else {
+                            std::vector<helios::WorkerPool::BackendInfo> new_endpoints;
+                            for (const auto& pool_cfg : res.config.backend_pools) {
+                                for (const auto& ep : pool_cfg.endpoints) {
+                                    new_endpoints.push_back({ep.host, ep.port, ep.weight});
+                                }
+                            }
+
+                            pool.ReloadBackends(new_endpoints);
+                            config = std::move(res.config);
+                            std::cout << "[HELIOS] Configuration reloaded successfully ("
+                                      << new_endpoints.size() << " backend endpoint(s) active).\n";
+                        }
+                    }
+                }
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
             }
         } else {

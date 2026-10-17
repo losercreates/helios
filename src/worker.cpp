@@ -98,9 +98,21 @@ void Worker::Run() {
         if (event_fd_ >= 0) {
             uint64_t val = 0;
             ssize_t n = ::read(event_fd_, &val, sizeof(val));
-            if (n > 0 && val > 0) {
+            if (n > 0 && (val & 1)) {
                 stop_requested_.store(true, std::memory_order_relaxed);
                 break;
+            }
+        }
+
+        if (has_tasks_.load(std::memory_order_acquire)) {
+            std::vector<std::function<void()>> tasks;
+            {
+                std::lock_guard<std::mutex> lock(task_mutex_);
+                tasks.swap(pending_tasks_);
+                has_tasks_.store(false, std::memory_order_release);
+            }
+            for (auto& task : tasks) {
+                if (task) task();
             }
         }
 
@@ -158,6 +170,20 @@ void Worker::SetListenPort(uint16_t port) noexcept {
     proxy_.SetListenPort(port);
 }
 
+void Worker::Post(std::function<void()> task) {
+    if (!task) return;
+    {
+        std::lock_guard<std::mutex> lock(task_mutex_);
+        pending_tasks_.push_back(std::move(task));
+    }
+    has_tasks_.store(true, std::memory_order_release);
+    if (event_fd_ >= 0) {
+        uint64_t val = 2;
+        ssize_t ret = ::write(event_fd_, &val, sizeof(val));
+        (void)ret;
+    }
+}
+
 // ==========================================
 // WorkerPool Implementation
 // ==========================================
@@ -173,6 +199,69 @@ void WorkerPool::AddBackend(std::string host, uint16_t port, uint32_t weight) {
     initial_backends_.emplace_back(host, port, weight);
     for (auto& w : workers_) {
         w->AddBackend(host, port, weight);
+    }
+}
+
+void WorkerPool::ReloadBackends(const std::vector<BackendInfo>& new_backends) {
+    initial_backends_.clear();
+    for (const auto& b : new_backends) {
+        initial_backends_.emplace_back(b.host, b.port, b.weight);
+    }
+
+    if (workers_.empty()) return;
+
+    std::vector<std::future<void>> futures;
+    futures.reserve(workers_.size());
+
+    for (auto& worker : workers_) {
+        auto promise = std::make_shared<std::promise<void>>();
+        futures.push_back(promise->get_future());
+
+        worker->Post([w = worker.get(), endpoints = new_backends, p = promise]() {
+            auto& lb = w->GetProxy().GetLoadBalancer();
+            auto existing = lb.GetAllBackends();
+
+            // 1. Identify backends to remove
+            for (const auto& b : existing) {
+                if (!b) continue;
+                bool found = false;
+                for (const auto& ep : endpoints) {
+                    if (b->GetHost() == ep.host && b->GetPort() == ep.port) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    b->SetDraining(true);
+                    lb.RemoveBackend(b->GetId());
+                }
+            }
+
+            // 2. Identify backends to add or update weight
+            for (const auto& ep : endpoints) {
+                bool found = false;
+                for (const auto& b : existing) {
+                    if (b && b->GetHost() == ep.host && b->GetPort() == ep.port) {
+                        found = true;
+                        if (b->GetWeight() != ep.weight) {
+                            b->SetWeight(ep.weight);
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    w->AddBackend(ep.host, ep.port, ep.weight);
+                }
+            }
+
+            p->set_value();
+        });
+    }
+
+    for (auto& f : futures) {
+        if (f.valid()) {
+            f.wait_for(std::chrono::seconds(2));
+        }
     }
 }
 
