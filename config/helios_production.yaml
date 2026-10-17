@@ -34,3 +34,11 @@ health_check:
 metrics:
   enabled: true
   port: 9090
+
+logging:
+  enabled: true
+  format: "json"
+  output: "/var/log/helios/access.log"
+  queue_capacity: 131072
+  flush_interval_ms: 100
+

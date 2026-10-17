@@ -23,6 +23,7 @@ add_library(helios_lib STATIC
     metrics/metrics_collector.cpp
     metrics/prometheus_server.cpp
     config/config_loader.cpp
+    logging/access_logger.cpp
 )
 
 target_include_directories(helios_lib PUBLIC
@@ -35,6 +36,7 @@ target_include_directories(helios_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/backend
     ${CMAKE_CURRENT_SOURCE_DIR}/metrics
     ${CMAKE_CURRENT_SOURCE_DIR}/config
+    ${CMAKE_CURRENT_SOURCE_DIR}/logging
 )
 
 target_link_libraries(helios_lib PUBLIC

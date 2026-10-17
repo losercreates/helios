@@ -52,6 +52,8 @@ public:
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
     void SetListenPort(uint16_t port) noexcept;
     void Post(std::function<void()> task);
+    void SetAccessLogger(std::shared_ptr<AccessLogger> logger) noexcept { proxy_.SetAccessLogger(std::move(logger)); }
+    void SetMetrics(std::shared_ptr<WorkerMetrics> metrics) noexcept { proxy_.SetMetrics(std::move(metrics)); }
 
     [[nodiscard]] uint32_t GetWorkerId() const noexcept { return worker_id_; }
     [[nodiscard]] int GetCoreId() const noexcept { return core_id_; }
@@ -106,6 +108,10 @@ public:
 
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
     void ReloadBackends(const std::vector<BackendInfo>& new_backends);
+    void SetAccessLogger(std::shared_ptr<AccessLogger> logger);
+    [[nodiscard]] std::shared_ptr<AccessLogger> GetAccessLogger() const noexcept { return access_logger_; }
+    void SetMetricsCollector(std::shared_ptr<MetricsCollector> collector);
+    [[nodiscard]] std::shared_ptr<MetricsCollector> GetMetricsCollector() const noexcept { return metrics_collector_; }
 
     bool Start();
     void Stop();
@@ -126,6 +132,8 @@ private:
     uint16_t actual_port_{0};
     std::vector<std::unique_ptr<Worker>> workers_;
     std::vector<std::tuple<std::string, uint16_t, uint32_t>> initial_backends_;
+    std::shared_ptr<AccessLogger> access_logger_;
+    std::shared_ptr<MetricsCollector> metrics_collector_;
     std::atomic<bool> running_{false};
 };
 

@@ -202,6 +202,22 @@ void WorkerPool::AddBackend(std::string host, uint16_t port, uint32_t weight) {
     }
 }
 
+void WorkerPool::SetAccessLogger(std::shared_ptr<AccessLogger> logger) {
+    access_logger_ = std::move(logger);
+    for (auto& w : workers_) {
+        w->SetAccessLogger(access_logger_);
+    }
+}
+
+void WorkerPool::SetMetricsCollector(std::shared_ptr<MetricsCollector> collector) {
+    metrics_collector_ = std::move(collector);
+    for (size_t i = 0; i < workers_.size(); ++i) {
+        if (metrics_collector_) {
+            workers_[i]->SetMetrics(metrics_collector_->GetOrCreateWorkerMetrics(static_cast<uint32_t>(i)));
+        }
+    }
+}
+
 void WorkerPool::ReloadBackends(const std::vector<BackendInfo>& new_backends) {
     initial_backends_.clear();
     for (const auto& b : new_backends) {
@@ -293,6 +309,12 @@ bool WorkerPool::Start() {
         wcfg.proxy_config.buffer_size = config_.buffer_size;
 
         auto worker = std::make_unique<Worker>(wcfg.worker_id, wcfg.core_id, std::move(wcfg));
+        if (access_logger_) {
+            worker->SetAccessLogger(access_logger_);
+        }
+        if (metrics_collector_) {
+            worker->SetMetrics(metrics_collector_->GetOrCreateWorkerMetrics(wcfg.worker_id));
+        }
         for (const auto& [host, port, weight] : initial_backends_) {
             worker->AddBackend(host, port, weight);
         }

@@ -16,6 +16,7 @@ add_executable(helios_unit_tests
     test_epoll_baseline.cpp
     test_prometheus_server.cpp
     test_config_loader.cpp
+    test_access_logger.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE

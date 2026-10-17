@@ -9,6 +9,8 @@
 #include "net/connection_pair.hpp"
 #include "lb/load_balancer.hpp"
 #include "lb/round_robin.hpp"
+#include "logging/access_logger.hpp"
+#include "metrics/metrics_collector.hpp"
 
 #include <unordered_map>
 #include <memory>
@@ -85,6 +87,12 @@ public:
     [[nodiscard]] RingEngine& GetEngine() noexcept { return engine_; }
     [[nodiscard]] bool IsRunning() const noexcept { return running_; }
 
+    void SetAccessLogger(std::shared_ptr<AccessLogger> logger) noexcept { access_logger_ = std::move(logger); }
+    [[nodiscard]] std::shared_ptr<AccessLogger> GetAccessLogger() const noexcept { return access_logger_; }
+
+    void SetMetrics(std::shared_ptr<WorkerMetrics> metrics) noexcept { metrics_ = std::move(metrics); }
+    [[nodiscard]] std::shared_ptr<WorkerMetrics> GetMetrics() const noexcept { return metrics_; }
+
 private:
 
     struct ConnectionStateData {
@@ -104,10 +112,47 @@ private:
         bool backend_read_paused{false};
 
         std::shared_ptr<Backend> backend;
+        std::shared_ptr<AccessLogger> access_logger;
+        std::shared_ptr<WorkerMetrics> metrics;
+
+        std::chrono::steady_clock::time_point start_time{std::chrono::steady_clock::now()};
+        std::chrono::system_clock::time_point wall_start_time{std::chrono::system_clock::now()};
+        std::string client_ip{"127.0.0.1"};
+        uint16_t client_port{0};
+        std::string upstream_endpoint;
+        std::string method{"TCP"};
+        std::string uri{"/"};
+        std::string http_version{"TCP"};
+        int status_code{200};
+        uint64_t bytes_sent{0};
+        uint64_t bytes_received{0};
+        bool parsed_request{false};
+        bool parsed_response{false};
 
         ~ConnectionStateData() {
             if (backend) {
                 backend->DecrementActiveConnections();
+            }
+            auto now = std::chrono::steady_clock::now();
+            auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time);
+            if (metrics) {
+                metrics->active_connections.fetch_sub(1, std::memory_order_relaxed);
+                metrics->latency_histogram.Observe(static_cast<uint64_t>(duration_us.count()));
+            }
+            if (access_logger && access_logger->IsRunning()) {
+                AccessLogEntry entry;
+                entry.timestamp = wall_start_time;
+                entry.client_ip = std::move(client_ip);
+                entry.client_port = client_port;
+                entry.method = std::move(method);
+                entry.uri = std::move(uri);
+                entry.http_version = std::move(http_version);
+                entry.status_code = status_code;
+                entry.bytes_sent = bytes_sent;
+                entry.bytes_received = bytes_received;
+                entry.duration_us = duration_us;
+                entry.upstream_endpoint = std::move(upstream_endpoint);
+                access_logger->Log(std::move(entry));
             }
         }
     };
@@ -145,6 +190,8 @@ private:
     socklen_t accept_client_addr_len_{sizeof(sockaddr_in)};
 
     std::unordered_map<uint64_t, std::unique_ptr<ConnectionStateData>> connections_;
+    std::shared_ptr<AccessLogger> access_logger_;
+    std::shared_ptr<WorkerMetrics> metrics_;
 };
 
 } // namespace helios

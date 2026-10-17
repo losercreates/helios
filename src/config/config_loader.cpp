@@ -318,6 +318,16 @@ PrometheusServer::Config HeliosConfig::ToPrometheusConfig() const {
     return pcfg;
 }
 
+AccessLoggerConfig HeliosConfig::ToAccessLoggerConfig() const {
+    AccessLoggerConfig lcfg;
+    lcfg.enabled = logging.enabled;
+    lcfg.format = (logging.format == "combined") ? LogFormat::Combined : LogFormat::Json;
+    lcfg.output = logging.output;
+    lcfg.queue_capacity = logging.queue_capacity;
+    lcfg.flush_interval = logging.flush_interval;
+    return lcfg;
+}
+
 // ============================================================================
 // ConfigLoader Implementation
 // ============================================================================
@@ -458,6 +468,17 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
         if (const auto* val = metrics->Find("path")) config.metrics.path = val->AsString("/metrics");
     }
 
+    // 6. Logging Configuration
+    if (const auto* log_node = root.Find("logging")) {
+        if (const auto* val = log_node->Find("enabled")) config.logging.enabled = val->AsBool(false);
+        if (const auto* val = log_node->Find("format")) config.logging.format = ToLower(val->AsString("json"));
+        if (const auto* val = log_node->Find("output")) config.logging.output = val->AsString("stdout");
+        if (const auto* val = log_node->Find("queue_capacity")) config.logging.queue_capacity = val->AsUInt(65536);
+        if (const auto* val = log_node->Find("flush_interval_ms")) {
+            config.logging.flush_interval = std::chrono::milliseconds(val->AsUInt(100));
+        }
+    }
+
     return true;
 }
 
@@ -558,6 +579,22 @@ bool ConfigLoader::Validate(const HeliosConfig& config, std::string& error_messa
     if (config.metrics.enabled) {
         if (config.metrics.path.empty() || config.metrics.path.front() != '/') {
             error_message = "metrics.path must start with '/' (got '" + config.metrics.path + "')";
+            return false;
+        }
+    }
+
+    // 6. Validate logging
+    if (config.logging.enabled) {
+        if (config.logging.format != "json" && config.logging.format != "combined") {
+            error_message = "logging.format must be either 'json' or 'combined' (got '" + config.logging.format + "')";
+            return false;
+        }
+        if (config.logging.queue_capacity == 0) {
+            error_message = "logging.queue_capacity must be > 0";
+            return false;
+        }
+        if (config.logging.flush_interval.count() == 0) {
+            error_message = "logging.flush_interval_ms must be > 0";
             return false;
         }
     }

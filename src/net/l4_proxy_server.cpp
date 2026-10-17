@@ -2,6 +2,8 @@
 #include "socket_utils.hpp"
 #include <unistd.h>
 #include <sys/socket.h>
+#include <arpa/inet.h>
+#include <string_view>
 #include <array>
 #include <vector>
 #include <algorithm>
@@ -174,6 +176,14 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
     ResumePausedReads();
     engine_.Submit();
 
+    if (metrics_) {
+        if (submitted > 0) {
+            metrics_->iouring_sqe_submitted_total.fetch_add(static_cast<uint64_t>(submitted), std::memory_order_relaxed);
+        }
+        metrics_->iouring_cqe_reaped_total.fetch_add(total_reaped, std::memory_order_relaxed);
+        metrics_->buffer_pool_utilization.store(buffer_pool_.UtilizationRatio(), std::memory_order_relaxed);
+    }
+
     return static_cast<int>(total_reaped) + submitted;
 }
 
@@ -182,6 +192,9 @@ void L4ProxyServer::ScheduleAccept() {
 
     // Pause accept if buffer pool high watermark reached or exhausted
     if (buffer_pool_.IsHighWatermarkReached() || buffer_pool_.IsExhausted()) {
+        if (metrics_) {
+            metrics_->backpressure_pause_events_total.fetch_add(1, std::memory_order_relaxed);
+        }
         return;
     }
 
@@ -242,6 +255,20 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     data->backend = backend;
     backend->IncrementActiveConnections();
 
+    // Populate access logging metadata
+    char client_ip_buf[INET_ADDRSTRLEN] = "127.0.0.1";
+    inet_ntop(AF_INET, &(accept_client_addr_.sin_addr), client_ip_buf, INET_ADDRSTRLEN);
+    data->client_ip = client_ip_buf;
+    data->client_port = ntohs(accept_client_addr_.sin_port);
+    data->upstream_endpoint = backend->GetHost() + ":" + std::to_string(backend->GetPort());
+    data->access_logger = access_logger_;
+    data->metrics = metrics_;
+
+    if (metrics_) {
+        metrics_->requests_total.fetch_add(1, std::memory_order_relaxed);
+        metrics_->active_connections.fetch_add(1, std::memory_order_relaxed);
+    }
+
     data->client_read_ctx.role = ProxyOpRole::ClientRead;
     data->client_read_ctx.conn = conn;
 
@@ -277,6 +304,7 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
         if (backend) {
             backend->ReportConnectionFailure();
         }
+        data.status_code = 502;
         conn->InitiateClose("Backend connect failed");
         conn->DecrementPendingCqe();
         return;
@@ -335,6 +363,30 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
 
     if (buf) {
         if (event.result > 0) {
+            data.bytes_received += static_cast<uint64_t>(event.result);
+            if (metrics_) {
+                metrics_->bytes_read_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
+            }
+            if (!data.parsed_request) {
+                data.parsed_request = true;
+                std::string_view req(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
+                auto line_end = req.find("\r\n");
+                if (line_end != std::string_view::npos) {
+                    std::string_view line = req.substr(0, line_end);
+                    auto sp1 = line.find(' ');
+                    if (sp1 != std::string_view::npos) {
+                        data.method = std::string(line.substr(0, sp1));
+                        auto sp2 = line.find(' ', sp1 + 1);
+                        if (sp2 != std::string_view::npos) {
+                            data.uri = std::string(line.substr(sp1 + 1, sp2 - sp1 - 1));
+                            data.http_version = std::string(line.substr(sp2 + 1));
+                        } else {
+                            data.uri = std::string(line.substr(sp1 + 1));
+                        }
+                    }
+                }
+            }
+
             buf->AdvanceWrite(static_cast<size_t>(event.result));
             data.backend_write_ctx.buf = buf;
             engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);
@@ -432,6 +484,29 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
 
     if (buf) {
         if (event.result > 0) {
+            data.bytes_sent += static_cast<uint64_t>(event.result);
+            if (metrics_) {
+                metrics_->bytes_written_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
+            }
+            if (!data.parsed_response) {
+                data.parsed_response = true;
+                std::string_view resp(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
+                if (resp.rfind("HTTP/", 0) == 0) {
+                    auto sp1 = resp.find(' ');
+                    if (sp1 != std::string_view::npos && sp1 + 4 <= resp.size()) {
+                        int code = 0;
+                        for (size_t k = sp1 + 1; k < sp1 + 4 && k < resp.size(); ++k) {
+                            if (resp[k] >= '0' && resp[k] <= '9') {
+                                code = code * 10 + (resp[k] - '0');
+                            }
+                        }
+                        if (code >= 100 && code <= 599) {
+                            data.status_code = code;
+                        }
+                    }
+                }
+            }
+
             buf->AdvanceWrite(static_cast<size_t>(event.result));
             data.client_write_ctx.buf = buf;
             engine_.PrepWrite(conn->GetClientFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.client_write_ctx);

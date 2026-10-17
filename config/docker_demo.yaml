@@ -37,3 +37,11 @@ metrics:
   enabled: true
   port: 9090
   path: "/metrics"
+
+logging:
+  enabled: true
+  format: "json"
+  output: "stdout"
+  queue_capacity: 65536
+  flush_interval_ms: 100
+

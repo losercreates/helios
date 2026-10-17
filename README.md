@@ -140,22 +140,29 @@ Helios supports 4 pluggable, deterministic backend distribution strategies:
 
 ### 🐳 Instant Docker Sandbox (Recommended)
 
-Run a complete multi-container demonstration environment featuring **Helios**, two isolated upstream HTTP backends, and a **Prometheus** scraper in seconds:
+Run a complete multi-container demonstration environment featuring **Helios**, two isolated upstream HTTP backends, a **Prometheus** scraper, and a pre-configured **Grafana** telemetry dashboard in seconds:
 
 ```bash
 # Clone the repository
 git clone https://github.com/losercreates/helios.git
 cd helios
 
-# Start the full demonstration stack
+# Start the full demonstration stack (Helios + 2 Backends + Prometheus + Grafana)
 docker compose up -d
 
 # Verify load-balanced traffic (alternates round-robin between backend1 & backend2)
 curl http://localhost:8080
 
+# View real-time asynchronous access logs (JSON structured format)
+docker compose logs -f helios
+
 # Query Helios live Prometheus telemetry
 curl http://localhost:9090/metrics
 curl http://localhost:9090/healthz
+
+# Access Pre-Configured Grafana Telemetry Dashboard
+# Open http://localhost:3000 in your browser (Instant anonymous access, zero login required)
+# Features live RPS throughput, latency heatmaps, io_uring SQE/CQE rates, and buffer pool gauges
 
 # Access Prometheus Web UI
 # Open http://localhost:9091 in your browser
@@ -253,6 +260,24 @@ curl -i http://localhost:9090/metrics
 
 # Query healthz endpoint
 curl -i http://localhost:9090/healthz
+```
+
+#### 📝 High-Performance Asynchronous Access Logging
+
+Helios features an asynchronous, lock-free non-blocking access logger. Worker event loop threads push lightweight entries without blocking on disk I/O; a dedicated background thread batches, formats, and flushes log entries to `stdout`, `stderr`, or a file:
+
+```yaml
+logging:
+  enabled: true
+  format: "json"                       # "json" (structured) or "combined" (Apache/Nginx format)
+  output: "/var/log/helios/access.log" # "stdout", "stderr", or absolute file path
+  queue_capacity: 131072               # In-memory non-blocking ring queue capacity
+  flush_interval_ms: 100               # Background batched flush interval
+```
+
+Structured JSON log sample:
+```json
+{"time":"2026-10-17T04:10:00.123Z","client":"127.0.0.1:48290","method":"GET","uri":"/api/v1/resource","version":"HTTP/1.1","status":200,"bytes_sent":2048,"bytes_received":142,"duration_us":850,"upstream":"10.0.1.10:8080"}
 ```
 
 ---

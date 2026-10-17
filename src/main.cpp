@@ -3,6 +3,7 @@
 #include "config/config_loader.hpp"
 #include "metrics/prometheus_server.hpp"
 #include "metrics/metrics_collector.hpp"
+#include "logging/access_logger.hpp"
 #include <iostream>
 #include <csignal>
 #include <atomic>
@@ -137,9 +138,31 @@ int main(int argc, char* argv[]) {
         }
     }
 
+    // Initialize High-Performance Asynchronous Access Logger if enabled
+    std::shared_ptr<helios::AccessLogger> access_logger;
+    if (config.logging.enabled) {
+        auto log_cfg = config.ToAccessLoggerConfig();
+        access_logger = std::make_shared<helios::AccessLogger>(log_cfg);
+        if (access_logger->Start()) {
+            std::cout << "[HELIOS] Asynchronous access logger active (format="
+                      << config.logging.format << ", output=" << config.logging.output
+                      << ", queue_capacity=" << config.logging.queue_capacity << ")\n";
+        } else {
+            std::cerr << "[HELIOS] Warning: Failed to start access logger.\n";
+        }
+    }
+
     // Initialize Multi-Worker Proxy Pool
     auto pool_config = config.ToWorkerPoolConfig();
     helios::WorkerPool pool(pool_config);
+
+    if (access_logger) {
+        pool.SetAccessLogger(access_logger);
+    }
+
+    if (metrics_collector) {
+        pool.SetMetricsCollector(metrics_collector);
+    }
 
     for (const auto& backend_pool : config.backend_pools) {
         for (const auto& ep : backend_pool.endpoints) {
@@ -197,6 +220,13 @@ int main(int argc, char* argv[]) {
 
     if (prometheus_server && prometheus_server->IsRunning()) {
         prometheus_server->Stop();
+    }
+
+    if (access_logger && access_logger->IsRunning()) {
+        std::cout << "[HELIOS] Flushing and stopping access logger ("
+                  << access_logger->GetTotalLogged() << " records logged, "
+                  << access_logger->GetTotalDropped() << " dropped)...\n";
+        access_logger->Stop();
     }
 
     std::cout << "[HELIOS] Exiting cleanly (0).\n";

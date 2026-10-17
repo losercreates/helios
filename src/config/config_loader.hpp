@@ -2,6 +2,7 @@
 
 #include "worker.hpp"
 #include "metrics/prometheus_server.hpp"
+#include "logging/access_logger.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -87,15 +88,25 @@ struct MetricsConfig {
     std::string path{"/metrics"};
 };
 
+struct LoggingConfig {
+    bool enabled{false};
+    std::string format{"json"}; // "json" or "combined"
+    std::string output{"stdout"}; // "stdout", "stderr", or file path
+    size_t queue_capacity{65536};
+    std::chrono::milliseconds flush_interval{100};
+};
+
 struct HeliosConfig {
     ServerConfig server;
     std::vector<BackendPoolConfig> backend_pools;
     TimeoutsConfig timeouts;
     HealthCheckConfig health_check;
     MetricsConfig metrics;
+    LoggingConfig logging;
 
     [[nodiscard]] WorkerPoolConfig ToWorkerPoolConfig() const;
     [[nodiscard]] PrometheusServer::Config ToPrometheusConfig() const;
+    [[nodiscard]] AccessLoggerConfig ToAccessLoggerConfig() const;
 };
 
 struct ConfigResult {
