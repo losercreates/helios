@@ -42,6 +42,7 @@ bool TcpConnection::AsyncConnect(const char* host, uint16_t port, sockaddr_in* t
     if (fd_ < 0) {
         fd_ = SocketUtils::CreateTcpSocket();
         if (fd_ < 0) return false;
+        SocketUtils::SetTcpNoDelay(fd_);
     }
 
     if (!SocketUtils::ParseSockAddr(host, port, target_addr)) {

@@ -22,7 +22,8 @@ L4ProxyServer::L4ProxyServer(Config config)
       engine_(static_cast<uint32_t>(config_.ring_entries)),
       buffer_pool_(config_.total_buffers, config_.buffer_size),
       backpressure_ctrl_(buffer_pool_),
-      listener_(engine_) {
+      listener_(engine_),
+      timeout_check_interval_(config_.timeout_check_interval) {
     
     if (config_.lb_algorithm == "weighted_round_robin") {
         lb_ = std::make_unique<WeightedRoundRobinLoadBalancer>();
@@ -124,6 +125,7 @@ void L4ProxyServer::Stop() {
     }
 
     connections_.clear();
+    paused_connections_.clear();
     active_connections_.store(0, std::memory_order_relaxed);
 }
 
@@ -172,7 +174,11 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
         engine_.Submit();
     }
 
-    CheckTimeouts();
+    auto now = std::chrono::steady_clock::now();
+    if (now - last_timeout_check_ >= timeout_check_interval_) {
+        last_timeout_check_ = now;
+        CheckTimeouts(now);
+    }
     ResumePausedReads();
     engine_.Submit();
 
@@ -217,6 +223,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
 
     int client_fd = event.result;
     total_accepted_connections_.fetch_add(1, std::memory_order_relaxed);
+    SocketUtils::SetTcpNoDelay(client_fd);
     auto backend = lb_->SelectBackend();
     if (!backend) {
         // No backend available
@@ -239,6 +246,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
         ScheduleAccept();
         return;
     }
+    SocketUtils::SetTcpNoDelay(backend_fd);
 
     uint64_t conn_id = next_conn_id_++;
     auto conn = std::make_shared<ConnectionPair>(conn_id, engine_, client_fd);
@@ -246,6 +254,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
 
     conn->SetCleanupCallback([this](uint64_t id) {
         connections_.erase(id);
+        paused_connections_.erase(id);
         active_connections_.fetch_sub(1, std::memory_order_relaxed);
     });
 
@@ -329,24 +338,46 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
     conn->DecrementPendingCqe();
 }
 
+void L4ProxyServer::SetClientReadPaused(ConnectionStateData& data, bool paused) {
+    data.client_read_paused = paused;
+    if (paused) {
+        if (data.conn) {
+            paused_connections_.insert(data.conn->GetId());
+        }
+    } else if (!data.backend_read_paused && data.conn) {
+        paused_connections_.erase(data.conn->GetId());
+    }
+}
+
+void L4ProxyServer::SetBackendReadPaused(ConnectionStateData& data, bool paused) {
+    data.backend_read_paused = paused;
+    if (paused) {
+        if (data.conn) {
+            paused_connections_.insert(data.conn->GetId());
+        }
+    } else if (!data.client_read_paused && data.conn) {
+        paused_connections_.erase(data.conn->GetId());
+    }
+}
+
 void L4ProxyServer::TryStartClientRead(ConnectionStateData& data) {
     if (data.client_read_active || data.conn->IsClientReadStopped() || data.conn->IsDraining()) {
-        data.client_read_paused = false;
+        SetClientReadPaused(data, false);
         return;
     }
 
     if (data.backend_read_paused) {
-        data.client_read_paused = true;
+        SetClientReadPaused(data, true);
         return;
     }
 
     Buffer* buf = buffer_pool_.Acquire();
     if (!buf) {
-        data.client_read_paused = true;
+        SetClientReadPaused(data, true);
         return;
     }
 
-    data.client_read_paused = false;
+    SetClientReadPaused(data, false);
     data.client_read_ctx.buf = buf;
     data.client_read_active = true;
 
@@ -437,7 +468,7 @@ void L4ProxyServer::HandleBackendWriteCompletion(ConnectionStateData& data, cons
             // Complete payload write succeeded
             buffer_pool_.Release(buf);
             data.backend_write_ctx.buf = nullptr;
-            data.client_read_paused = true;
+            TryStartClientRead(data);
         } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
             data.backend_write_ctx.buf = buf;
             engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);
@@ -457,17 +488,17 @@ void L4ProxyServer::HandleBackendWriteCompletion(ConnectionStateData& data, cons
 
 void L4ProxyServer::TryStartBackendRead(ConnectionStateData& data) {
     if (data.backend_read_active || data.conn->IsBackendReadStopped() || data.conn->IsDraining()) {
-        data.backend_read_paused = false;
+        SetBackendReadPaused(data, false);
         return;
     }
 
     Buffer* buf = buffer_pool_.Acquire();
     if (!buf) {
-        data.backend_read_paused = true;
+        SetBackendReadPaused(data, true);
         return;
     }
 
-    data.backend_read_paused = false;
+    SetBackendReadPaused(data, false);
     data.backend_read_ctx.buf = buf;
     data.backend_read_active = true;
 
@@ -557,7 +588,7 @@ void L4ProxyServer::HandleClientWriteCompletion(ConnectionStateData& data, const
             // Complete payload write succeeded
             buffer_pool_.Release(buf);
             data.client_write_ctx.buf = nullptr;
-            data.backend_read_paused = true;
+            TryStartBackendRead(data);
         } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
             data.client_write_ctx.buf = buf;
             engine_.PrepWrite(conn->GetClientFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.client_write_ctx);
@@ -576,40 +607,47 @@ void L4ProxyServer::HandleClientWriteCompletion(ConnectionStateData& data, const
 }
 
 void L4ProxyServer::ResumePausedReads() {
-    for (auto& [id, data] : connections_) {
-        if (!data) continue;
-        if (data->backend_read_paused) {
-            TryStartBackendRead(*data);
-        }
+    if (paused_connections_.empty() || buffer_pool_.FreeCount() == 0) {
+        ScheduleAccept();
+        return;
     }
-    for (auto& [id, data] : connections_) {
-        if (!data) continue;
-        if (data->client_read_paused) {
-            TryStartClientRead(*data);
+
+    std::vector<uint64_t> to_resume(paused_connections_.begin(), paused_connections_.end());
+    for (uint64_t id : to_resume) {
+        if (buffer_pool_.FreeCount() == 0) {
+            break;
+        }
+        auto it = connections_.find(id);
+        if (it == connections_.end()) {
+            paused_connections_.erase(id);
+            continue;
+        }
+        auto& data = *it->second;
+        if (data.backend_read_paused) {
+            TryStartBackendRead(data);
+        }
+        if (buffer_pool_.FreeCount() == 0) {
+            break;
+        }
+        if (data.client_read_paused) {
+            TryStartClientRead(data);
         }
     }
     ScheduleAccept();
 }
 
-void L4ProxyServer::CheckTimeouts() {
-    auto now = std::chrono::steady_clock::now();
+void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
+    if (connections_.empty()) return;
 
-    if (buffer_pool_.FreeCount() == 0) {
-        size_t held = 0;
-        for (auto& [id, data] : connections_) {
-            if (!data) continue;
-            if (data->client_read_ctx.buf) held++;
-            if (data->client_write_ctx.buf) held++;
-            if (data->backend_read_ctx.buf) held++;
-            if (data->backend_write_ctx.buf) held++;
-        }
-        std::cerr << "POOL EXHAUSTED! Connections hold " << held << " buffers.\n";
-    }
     for (auto& [id, data] : connections_) {
         if (!data || !data->conn) continue;
         data->conn->CheckHalfCloseTimeout(now, config_.half_close_timeout);
         data->conn->CheckIdleTimeout(now, config_.idle_timeout);
     }
+}
+
+void L4ProxyServer::CheckTimeouts() {
+    CheckTimeouts(std::chrono::steady_clock::now());
 }
 
 } // namespace helios

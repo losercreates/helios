@@ -13,6 +13,7 @@
 #include "metrics/metrics_collector.hpp"
 
 #include <unordered_map>
+#include <unordered_set>
 #include <memory>
 #include <vector>
 #include <cstdint>
@@ -48,6 +49,7 @@ public:
         size_t buffer_size{16384};
         std::chrono::milliseconds half_close_timeout{5000};
         std::chrono::milliseconds idle_timeout{30000};
+        std::chrono::milliseconds timeout_check_interval{250};
         std::string lb_algorithm{"round_robin"};
     };
 
@@ -167,7 +169,10 @@ private:
 
     void TryStartClientRead(ConnectionStateData& data);
     void TryStartBackendRead(ConnectionStateData& data);
+    void SetClientReadPaused(ConnectionStateData& data, bool paused);
+    void SetBackendReadPaused(ConnectionStateData& data, bool paused);
     void ResumePausedReads();
+    void CheckTimeouts(std::chrono::steady_clock::time_point now);
     void CheckTimeouts();
 
     Config config_;
@@ -190,6 +195,9 @@ private:
     socklen_t accept_client_addr_len_{sizeof(sockaddr_in)};
 
     std::unordered_map<uint64_t, std::unique_ptr<ConnectionStateData>> connections_;
+    std::unordered_set<uint64_t> paused_connections_;
+    std::chrono::steady_clock::time_point last_timeout_check_{std::chrono::steady_clock::now()};
+    std::chrono::milliseconds timeout_check_interval_{250};
     std::shared_ptr<AccessLogger> access_logger_;
     std::shared_ptr<WorkerMetrics> metrics_;
 };
