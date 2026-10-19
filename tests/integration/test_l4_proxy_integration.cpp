@@ -634,3 +634,125 @@ TEST_F(L4ProxyIntegrationTest, BackendHealthTransitionsAndTrafficRouting) {
     close(fd4);
     StopProxyLoop();
 }
+
+// 13. Backend Connection Pool Reuses Idle Connections Across Sequential Requests
+TEST_F(L4ProxyIntegrationTest, BackendConnectionPoolReusesIdleConnections) {
+    TestTcpBackend backend;
+    ASSERT_TRUE(backend.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.enable_connection_pooling = true;
+    config.connection_pool_config.idle_timeout = std::chrono::milliseconds(5000);
+    config.connection_pool_config.max_idle_per_backend = 10;
+
+    L4ProxyServer proxy(config);
+    proxy.AddBackend("127.0.0.1", backend.GetPort());
+
+    auto metrics = std::make_shared<WorkerMetrics>(0);
+    proxy.SetMetrics(metrics);
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    sockaddr_in target_addr{};
+    target_addr.sin_family = AF_INET;
+    target_addr.sin_port = htons(proxy.GetPort());
+    inet_pton(AF_INET, "127.0.0.1", &target_addr.sin_addr);
+
+    // Request 1: Fresh backend connection (pool miss)
+    int fd1 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_EQ(connect(fd1, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    std::string req1 = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nHello";
+    send(fd1, req1.data(), req1.size(), 0);
+
+    char buf[128]{};
+    ssize_t n1 = recv(fd1, buf, sizeof(buf) - 1, 0);
+    ASSERT_GT(n1, 0);
+    close(fd1);
+
+    // Allow proxy loop to complete cleanup and recycle backend socket into pool
+    for (int retry = 0; retry < 50; ++retry) {
+        if (proxy.GetBackendPool() && proxy.GetBackendPool()->TotalIdleCount() > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    ASSERT_NE(proxy.GetBackendPool(), nullptr);
+    EXPECT_EQ(proxy.GetBackendPool()->TotalIdleCount(), 1u);
+    EXPECT_EQ(metrics->backend_pool_misses_total.load(), 1u);
+    EXPECT_EQ(metrics->backend_pool_hits_total.load(), 0u);
+
+    // Request 2: Reuses the pooled backend connection (pool hit)
+    int fd2 = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_EQ(connect(fd2, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    std::string req2 = "HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nWorld";
+    send(fd2, req2.data(), req2.size(), 0);
+
+    std::memset(buf, 0, sizeof(buf));
+    ssize_t n2 = recv(fd2, buf, sizeof(buf) - 1, 0);
+    ASSERT_GT(n2, 0);
+    close(fd2);
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+    EXPECT_EQ(metrics->backend_pool_hits_total.load(), 1u);
+
+    StopProxyLoop();
+}
+
+// 14. Backend Connection Pool Reaps Expired Connections On Timeout
+TEST_F(L4ProxyIntegrationTest, BackendConnectionPoolReapsExpiredOnTimeout) {
+    TestTcpBackend backend;
+    ASSERT_TRUE(backend.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.enable_connection_pooling = true;
+    config.timeout_check_interval = std::chrono::milliseconds(50);
+    config.connection_pool_config.idle_timeout = std::chrono::milliseconds(100);
+
+    L4ProxyServer proxy(config);
+    proxy.AddBackend("127.0.0.1", backend.GetPort());
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    sockaddr_in target_addr{};
+    target_addr.sin_family = AF_INET;
+    target_addr.sin_port = htons(proxy.GetPort());
+    inet_pton(AF_INET, "127.0.0.1", &target_addr.sin_addr);
+
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_EQ(connect(fd, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    std::string req = "HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\nTest";
+    send(fd, req.data(), req.size(), 0);
+    char buf[64]{};
+    recv(fd, buf, sizeof(buf) - 1, 0);
+    close(fd);
+
+    // Wait for connection to be recycled into pool
+    for (int retry = 0; retry < 50; ++retry) {
+        if (proxy.GetBackendPool() && proxy.GetBackendPool()->TotalIdleCount() > 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+    ASSERT_NE(proxy.GetBackendPool(), nullptr);
+    EXPECT_EQ(proxy.GetBackendPool()->TotalIdleCount(), 1u);
+
+    // Wait for idle_timeout (100ms) and periodic CheckTimeouts to reap the expired connection
+    for (int retry = 0; retry < 50; ++retry) {
+        if (proxy.GetBackendPool()->TotalIdleCount() == 0) {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+
+    EXPECT_EQ(proxy.GetBackendPool()->TotalIdleCount(), 0u);
+
+    StopProxyLoop();
+}

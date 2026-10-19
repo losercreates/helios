@@ -35,6 +35,10 @@ L4ProxyServer::L4ProxyServer(Config config)
         lb_ = std::make_unique<RoundRobinLoadBalancer>();
     }
 
+    if (config_.enable_connection_pooling) {
+        backend_pool_ = std::make_unique<BackendConnectionPool>(config_.connection_pool_config);
+    }
+
     accept_ctx_.role = ProxyOpRole::Accept;
 }
 
@@ -44,6 +48,20 @@ L4ProxyServer::~L4ProxyServer() {
 
 void L4ProxyServer::AddBackend(std::string host, uint16_t port, uint32_t weight) {
     lb_->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port, weight));
+}
+
+void L4ProxyServer::EnableConnectionPooling(BackendConnectionPoolConfig config) {
+    config_.enable_connection_pooling = true;
+    config_.connection_pool_config = config;
+    backend_pool_ = std::make_unique<BackendConnectionPool>(config);
+}
+
+void L4ProxyServer::DisableConnectionPooling() noexcept {
+    config_.enable_connection_pooling = false;
+    if (backend_pool_) {
+        backend_pool_->Clear();
+        backend_pool_.reset();
+    }
 }
 
 bool L4ProxyServer::Start() {
@@ -73,6 +91,10 @@ void L4ProxyServer::Stop() {
     running_ = false;
     CloseListener();
 
+    if (backend_pool_) {
+        backend_pool_->Clear();
+    }
+
     // Initiate close on all active connections
     std::vector<uint64_t> conn_ids;
     conn_ids.reserve(connections_.size());
@@ -96,6 +118,12 @@ void L4ProxyServer::Stop() {
         for (uint32_t i = 0; i < reaped; ++i) {
             if (!events[i].context) continue;
             auto* pctx = static_cast<ProxyOpContext*>(events[i].context);
+            if (pctx->role == ProxyOpRole::Cancel) {
+                if (pctx->conn) {
+                    pctx->conn->DecrementPendingCqe();
+                }
+                continue;
+            }
             if (pctx->role == ProxyOpRole::Accept) {
                 accept_in_flight_ = false;
                 if (events[i].result > 0) {
@@ -149,6 +177,13 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
             }
 
             auto* pctx = static_cast<ProxyOpContext*>(events[i].context);
+
+            if (pctx->role == ProxyOpRole::Cancel) {
+                if (pctx->conn) {
+                    pctx->conn->DecrementPendingCqe();
+                }
+                continue;
+            }
 
             if (pctx->role == ProxyOpRole::Accept) {
                 HandleAcceptCompletion(events[i]);
@@ -233,6 +268,9 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     }
 
     if (!backend->GetCircuitBreaker().AllowRequest()) {
+        if (backend_pool_) {
+            backend_pool_->Purge(backend->GetId());
+        }
         ::close(client_fd);
         ScheduleAccept();
         return;
@@ -240,17 +278,44 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
 
     sockaddr_in backend_addr = backend->GetSockAddr();
 
-    int backend_fd = SocketUtils::CreateTcpSocket();
-    if (backend_fd < 0) {
-        ::close(client_fd);
-        ScheduleAccept();
-        return;
+    int backend_fd = -1;
+    bool is_pooled = false;
+    if (backend_pool_) {
+        auto pooled_opt = backend_pool_->Acquire(backend->GetId());
+        if (pooled_opt) {
+            backend_fd = *pooled_opt;
+            is_pooled = true;
+            if (metrics_) {
+                metrics_->backend_pool_hits_total.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
     }
-    SocketUtils::SetTcpNoDelay(backend_fd);
+
+    if (backend_fd < 0) {
+        backend_fd = SocketUtils::CreateTcpSocket();
+        if (backend_fd < 0) {
+            ::close(client_fd);
+            ScheduleAccept();
+            return;
+        }
+        SocketUtils::SetTcpNoDelay(backend_fd);
+        if (metrics_) {
+            metrics_->backend_pool_misses_total.fetch_add(1, std::memory_order_relaxed);
+        }
+    }
 
     uint64_t conn_id = next_conn_id_++;
     auto conn = std::make_shared<ConnectionPair>(conn_id, engine_, client_fd);
     conn->SetBackendFd(backend_fd);
+
+    if (backend_pool_) {
+        conn->SetBackendRecycleCallback([this, backend_id = backend->GetId()](int fd) -> bool {
+            if (!backend_pool_) {
+                return false;
+            }
+            return backend_pool_->Release(backend_id, fd);
+        });
+    }
 
     conn->SetCleanupCallback([this](uint64_t id) {
         connections_.erase(id);
@@ -290,14 +355,23 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     data->backend_write_ctx.role = ProxyOpRole::BackendWrite;
     data->backend_write_ctx.conn = conn;
 
-    data->connect_ctx.role = ProxyOpRole::Connect;
-    data->connect_ctx.conn = conn;
+    data->cancel_backend_read_ctx.role = ProxyOpRole::Cancel;
+    data->cancel_backend_read_ctx.conn = conn;
 
-    conn->TransitionTo(ConnectionState::ConnectingBackend);
+    if (is_pooled) {
+        conn->TransitionTo(ConnectionState::Established);
+        TryStartClientRead(*data);
+        TryStartBackendRead(*data);
+        engine_.Submit();
+    } else {
+        data->connect_ctx.role = ProxyOpRole::Connect;
+        data->connect_ctx.conn = conn;
 
-    engine_.PrepConnect(backend_fd, reinterpret_cast<const sockaddr*>(&backend_addr), sizeof(backend_addr), &data->connect_ctx);
-    conn->IncrementPendingCqe();
-    engine_.Submit();
+        conn->TransitionTo(ConnectionState::ConnectingBackend);
+        engine_.PrepConnect(backend_fd, reinterpret_cast<const sockaddr*>(&backend_addr), sizeof(backend_addr), &data->connect_ctx);
+        conn->IncrementPendingCqe();
+        engine_.Submit();
+    }
 
     connections_[conn_id] = std::move(data);
     active_connections_.fetch_add(1, std::memory_order_relaxed);
@@ -312,6 +386,9 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
     if (event.result < 0) {
         if (backend) {
             backend->ReportConnectionFailure();
+            if (backend_pool_) {
+                backend_pool_->Purge(backend->GetId());
+            }
         }
         data.status_code = 502;
         conn->InitiateClose("Backend connect failed");
@@ -420,13 +497,24 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
 
             buf->AdvanceWrite(static_cast<size_t>(event.result));
             data.backend_write_ctx.buf = buf;
+            conn->SetBackendReusable(false);
             engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);
             conn->IncrementPendingCqe();
             engine_.Submit();
         } else if (event.result == 0) {
             // EOF from client
             buffer_pool_.Release(buf);
-            conn->HandleClientFin();
+            if (backend_pool_ && conn->IsBackendReusable()) {
+                if (data.backend_read_active) {
+                    if (engine_.PrepCancel(&data.backend_read_ctx, &data.cancel_backend_read_ctx)) {
+                        conn->IncrementPendingCqe();
+                        engine_.Submit();
+                    }
+                }
+                conn->InitiateClose("Client closed reusable connection");
+            } else {
+                conn->HandleClientFin();
+            }
         } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
             data.client_read_ctx.buf = buf;
             engine_.PrepRead(conn->GetClientFd(), buf->data, buf->capacity, 0, &data.client_read_ctx);
@@ -437,7 +525,15 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
         } else {
             // Error on client read
             buffer_pool_.Release(buf);
-            if (event.result != -ECONNRESET) {
+            if (event.result == -ECONNRESET && backend_pool_ && conn->IsBackendReusable()) {
+                if (data.backend_read_active) {
+                    if (engine_.PrepCancel(&data.backend_read_ctx, &data.cancel_backend_read_ctx)) {
+                        conn->IncrementPendingCqe();
+                        engine_.Submit();
+                    }
+                }
+                conn->InitiateClose("Client reset reusable connection");
+            } else if (event.result != -ECONNRESET) {
                 std::cerr << "Client read error: " << event.result << "\n";
                 conn->InitiateClose("Client read error");
             } else {
@@ -479,6 +575,7 @@ void L4ProxyServer::HandleBackendWriteCompletion(ConnectionStateData& data, cons
             // Backend write error
             buffer_pool_.Release(buf);
             data.backend_write_ctx.buf = nullptr;
+            conn->SetBackendReusable(false);
             conn->InitiateClose("Backend write error");
         }
     }
@@ -546,6 +643,7 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
         } else if (event.result == 0) {
             // EOF from backend
             buffer_pool_.Release(buf);
+            conn->SetBackendReusable(false);
             conn->HandleBackendFin();
         } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
             data.backend_read_ctx.buf = buf;
@@ -554,9 +652,13 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
             data.backend_read_active = true;
             conn->DecrementPendingCqe();
             return;
+        } else if (event.result == -ECANCELED) {
+            // Backend read cancelled (recycled connection)
+            buffer_pool_.Release(buf);
         } else {
             // Error on backend read
             buffer_pool_.Release(buf);
+            conn->SetBackendReusable(false);
             if (event.result != -ECONNRESET) {
                 std::cerr << "Backend read error: " << event.result << "\n";
                 conn->InitiateClose("Backend read error");
@@ -588,6 +690,9 @@ void L4ProxyServer::HandleClientWriteCompletion(ConnectionStateData& data, const
             // Complete payload write succeeded
             buffer_pool_.Release(buf);
             data.client_write_ctx.buf = nullptr;
+            if (backend_pool_ && !conn->IsBackendReadStopped()) {
+                conn->SetBackendReusable(true);
+            }
             TryStartBackendRead(data);
         } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
             data.client_write_ctx.buf = buf;
@@ -599,6 +704,7 @@ void L4ProxyServer::HandleClientWriteCompletion(ConnectionStateData& data, const
             // Client write error
             buffer_pool_.Release(buf);
             data.client_write_ctx.buf = nullptr;
+            conn->SetBackendReusable(false);
             conn->InitiateClose("Client write error");
         }
     }
@@ -637,6 +743,10 @@ void L4ProxyServer::ResumePausedReads() {
 }
 
 void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
+    if (backend_pool_) {
+        backend_pool_->ReapExpired(now);
+    }
+
     if (connections_.empty()) return;
 
     for (auto& [id, data] : connections_) {

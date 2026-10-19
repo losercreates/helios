@@ -307,6 +307,8 @@ WorkerPoolConfig HeliosConfig::ToWorkerPoolConfig() const {
     wcfg.drain_timeout = timeouts.drain_timeout;
     if (!backend_pools.empty()) {
         wcfg.lb_algorithm = backend_pools[0].algorithm;
+        wcfg.enable_connection_pooling = backend_pools[0].enable_connection_pool;
+        wcfg.connection_pool_config = backend_pools[0].connection_pool_config;
     }
     return wcfg;
 }
@@ -416,6 +418,20 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
                         pool_cfg.endpoints.push_back(std::move(ep));
                     }
                 }
+
+                if (const auto* cp = pool_node.Find("connection_pool")) {
+                    if (const auto* val = cp->Find("enabled")) pool_cfg.enable_connection_pool = val->AsBool(false);
+                    if (const auto* val = cp->Find("max_idle_per_backend")) {
+                        pool_cfg.connection_pool_config.max_idle_per_backend = static_cast<size_t>(val->AsUInt(32));
+                    }
+                    if (const auto* val = cp->Find("max_total_idle")) {
+                        pool_cfg.connection_pool_config.max_total_idle = static_cast<size_t>(val->AsUInt(1024));
+                    }
+                    if (const auto* val = cp->Find("idle_timeout_ms")) {
+                        pool_cfg.connection_pool_config.idle_timeout = std::chrono::milliseconds(val->AsUInt(60000));
+                    }
+                }
+
                 config.backend_pools.push_back(std::move(pool_cfg));
             }
         }

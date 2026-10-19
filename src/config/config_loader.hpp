@@ -54,6 +54,8 @@ struct ServerConfig {
     size_t io_uring_entries{512};
 };
 
+#include "backend/backend_pool.hpp"
+
 struct BackendEndpointConfig {
     std::string host{"127.0.0.1"};
     uint16_t port{9001};
@@ -64,6 +66,8 @@ struct BackendPoolConfig {
     std::string name{"default_pool"};
     std::string algorithm{"round_robin"};
     std::vector<BackendEndpointConfig> endpoints;
+    bool enable_connection_pool{false};
+    BackendConnectionPoolConfig connection_pool_config{};
 };
 
 struct TimeoutsConfig {

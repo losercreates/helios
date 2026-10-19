@@ -1,6 +1,8 @@
 #include "backend_pool.hpp"
 #include <unistd.h>
 #include <algorithm>
+#include <sys/socket.h>
+#include <cerrno>
 
 namespace helios {
 
@@ -99,6 +101,20 @@ std::optional<int> BackendConnectionPool::Acquire(uint32_t backend_id, TimePoint
 
         // Check if connection has expired while idle
         if (now - conn.idle_since >= config_.idle_timeout) {
+            CloseFd(conn.fd);
+            continue;
+        }
+
+        // Liveness & Cleanliness Check: verify socket was not closed, reset, or dirty while idle
+        char peek_buf;
+        ssize_t peek_ret = ::recv(conn.fd, &peek_buf, 1, MSG_PEEK | MSG_DONTWAIT);
+        if (peek_ret == 0 || (peek_ret < 0 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EBADF && errno != ENOTSOCK)) {
+            // Peer closed (EOF) or connection reset/errored while idle
+            CloseFd(conn.fd);
+            continue;
+        }
+        if (peek_ret > 0) {
+            // Unexpected unread data pending while supposed to be idle
             CloseFd(conn.fd);
             continue;
         }

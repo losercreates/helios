@@ -307,6 +307,8 @@ bool WorkerPool::Start() {
         wcfg.proxy_config.ring_entries = config_.ring_entries;
         wcfg.proxy_config.total_buffers = config_.total_buffers;
         wcfg.proxy_config.buffer_size = config_.buffer_size;
+        wcfg.proxy_config.enable_connection_pooling = config_.enable_connection_pooling;
+        wcfg.proxy_config.connection_pool_config = config_.connection_pool_config;
 
         auto worker = std::make_unique<Worker>(wcfg.worker_id, wcfg.core_id, std::move(wcfg));
         if (access_logger_) {

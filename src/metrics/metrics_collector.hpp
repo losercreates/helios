@@ -62,6 +62,10 @@ struct WorkerMetrics {
     std::atomic<double> buffer_pool_utilization{0.0};
     std::atomic<uint64_t> backpressure_pause_events_total{0};
 
+    // 5. Upstream Connection Pool
+    std::atomic<uint64_t> backend_pool_hits_total{0};
+    std::atomic<uint64_t> backend_pool_misses_total{0};
+
     explicit WorkerMetrics(uint32_t id, std::vector<uint64_t> latency_buckets = {50, 100, 300})
         : worker_id(id), latency_histogram(std::move(latency_buckets)) {}
 

@@ -73,8 +73,18 @@ public:
     bool CheckHalfCloseTimeout(TimePoint now, std::chrono::milliseconds timeout_limit = std::chrono::milliseconds(5000));
     bool CheckIdleTimeout(TimePoint now, std::chrono::milliseconds idle_limit = std::chrono::milliseconds(30000));
 
-    // Optional Cleanup Callback
+    // Optional Cleanup and Recycle Callbacks
+    using BackendRecycleCallback = std::function<bool(int backend_fd)>;
     void SetCleanupCallback(std::function<void(uint64_t)> cb) { cleanup_cb_ = std::move(cb); }
+    void SetBackendRecycleCallback(BackendRecycleCallback cb) noexcept { recycle_cb_ = std::move(cb); }
+
+    [[nodiscard]] bool IsBackendReusable() const noexcept { return backend_reusable_; }
+    void SetBackendReusable(bool reusable) noexcept { backend_reusable_ = reusable; }
+    int ReleaseBackendFd() noexcept {
+        int fd = backend_fd_;
+        backend_fd_ = -1;
+        return fd;
+    }
 
     // Update activity timestamp
     void Touch() noexcept { last_active_time_ = Clock::now(); }
@@ -91,12 +101,14 @@ private:
     uint32_t pending_cqe_count_{0};
     bool client_read_stopped_{false};
     bool backend_read_stopped_{false};
+    bool backend_reusable_{false};
 
     TimePoint last_active_time_{Clock::now()};
     TimePoint half_close_start_time_{};
     bool half_close_timer_active_{false};
 
     std::function<void(uint64_t)> cleanup_cb_;
+    BackendRecycleCallback recycle_cb_;
 };
 
 } // namespace helios

@@ -30,6 +30,8 @@ struct WorkerPoolConfig {
     size_t total_buffers{1024};
     size_t buffer_size{16384};
     std::chrono::milliseconds drain_timeout{15000};
+    bool enable_connection_pooling{false};
+    BackendConnectionPoolConfig connection_pool_config{};
 };
 
 // Represents an isolated, thread-per-core Worker running on a dedicated CPU core.

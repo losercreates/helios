@@ -182,6 +182,24 @@ std::string MetricsCollector::RenderPrometheusText() const {
         ss << "helios_backpressure_pause_events_total{worker=\"" << w->worker_id << "\"} "
            << w->backpressure_pause_events_total.load(std::memory_order_relaxed) << "\n";
     }
+    ss << "\n";
+
+    // 11. helios_backend_pool_hits_total
+    ss << "# HELP helios_backend_pool_hits_total Total pooled backend connections reused\n";
+    ss << "# TYPE helios_backend_pool_hits_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_backend_pool_hits_total{worker=\"" << w->worker_id << "\"} "
+           << w->backend_pool_hits_total.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 12. helios_backend_pool_misses_total
+    ss << "# HELP helios_backend_pool_misses_total Total backend connections newly created (pool miss)\n";
+    ss << "# TYPE helios_backend_pool_misses_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_backend_pool_misses_total{worker=\"" << w->worker_id << "\"} "
+           << w->backend_pool_misses_total.load(std::memory_order_relaxed) << "\n";
+    }
 
     return ss.str();
 }

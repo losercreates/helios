@@ -9,6 +9,7 @@
 #include "net/connection_pair.hpp"
 #include "lb/load_balancer.hpp"
 #include "lb/round_robin.hpp"
+#include "backend/backend_pool.hpp"
 #include "logging/access_logger.hpp"
 #include "metrics/metrics_collector.hpp"
 
@@ -50,6 +51,8 @@ public:
         std::chrono::milliseconds half_close_timeout{5000};
         std::chrono::milliseconds idle_timeout{30000};
         std::chrono::milliseconds timeout_check_interval{250};
+        bool enable_connection_pooling{false};
+        BackendConnectionPoolConfig connection_pool_config{};
         std::string lb_algorithm{"round_robin"};
     };
 
@@ -95,6 +98,11 @@ public:
     void SetMetrics(std::shared_ptr<WorkerMetrics> metrics) noexcept { metrics_ = std::move(metrics); }
     [[nodiscard]] std::shared_ptr<WorkerMetrics> GetMetrics() const noexcept { return metrics_; }
 
+    void EnableConnectionPooling(BackendConnectionPoolConfig config = {});
+    void DisableConnectionPooling() noexcept;
+    [[nodiscard]] BackendConnectionPool* GetBackendPool() noexcept { return backend_pool_.get(); }
+    [[nodiscard]] const BackendConnectionPool* GetBackendPool() const noexcept { return backend_pool_.get(); }
+
 private:
 
     struct ConnectionStateData {
@@ -104,6 +112,7 @@ private:
         ProxyOpContext backend_read_ctx;
         ProxyOpContext backend_write_ctx;
         ProxyOpContext connect_ctx;
+        ProxyOpContext cancel_backend_read_ctx;
 
         sockaddr_in backend_addr{};
 
@@ -198,6 +207,7 @@ private:
     std::unordered_set<uint64_t> paused_connections_;
     std::chrono::steady_clock::time_point last_timeout_check_{std::chrono::steady_clock::now()};
     std::chrono::milliseconds timeout_check_interval_{250};
+    std::unique_ptr<BackendConnectionPool> backend_pool_;
     std::shared_ptr<AccessLogger> access_logger_;
     std::shared_ptr<WorkerMetrics> metrics_;
 };

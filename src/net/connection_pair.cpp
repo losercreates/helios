@@ -94,7 +94,7 @@ void ConnectionPair::DecrementPendingCqe() noexcept {
 bool ConnectionPair::HandleClientFin() {
     client_read_stopped_ = true;
     if (state_ == ConnectionState::Established) {
-        if (backend_fd_ >= 0) {
+        if (backend_fd_ >= 0 && !backend_reusable_) {
             ::shutdown(backend_fd_, SHUT_WR);
         }
         TransitionTo(ConnectionState::HalfClosedClient);
@@ -108,6 +108,7 @@ bool ConnectionPair::HandleClientFin() {
 
 bool ConnectionPair::HandleBackendFin() {
     backend_read_stopped_ = true;
+    backend_reusable_ = false;
     if (state_ == ConnectionState::Established) {
         if (client_fd_ >= 0) {
             ::shutdown(client_fd_, SHUT_WR);
@@ -122,7 +123,6 @@ bool ConnectionPair::HandleBackendFin() {
 }
 
 void ConnectionPair::InitiateClose(const char* reason) {
-    if (reason) std::cerr << "InitiateClose: " << reason << "\n";
     (void)reason;
     if (state_ == ConnectionState::Closed || state_ == ConnectionState::PendingCancellation) {
         return;
@@ -132,7 +132,9 @@ void ConnectionPair::InitiateClose(const char* reason) {
         ::shutdown(client_fd_, SHUT_RDWR);
     }
     if (backend_fd_ >= 0) {
-        ::shutdown(backend_fd_, SHUT_RDWR);
+        if (!backend_reusable_) {
+            ::shutdown(backend_fd_, SHUT_RDWR);
+        }
     }
     if (pending_cqe_count_ == 0) {
         TransitionTo(ConnectionState::Closed);
@@ -166,7 +168,13 @@ void ConnectionPair::PerformCleanup() noexcept {
         client_fd_ = -1;
     }
     if (backend_fd_ >= 0) {
-        ::close(backend_fd_);
+        bool recycled = false;
+        if (recycle_cb_ && backend_reusable_ && !backend_read_stopped_) {
+            recycled = recycle_cb_(backend_fd_);
+        }
+        if (!recycled) {
+            ::close(backend_fd_);
+        }
         backend_fd_ = -1;
     }
     if (cleanup_cb_) {
