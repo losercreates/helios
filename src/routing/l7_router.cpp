@@ -28,7 +28,28 @@ std::string_view StripPort(std::string_view host) noexcept {
 } // namespace
 
 void L7Router::AddRoute(L7RouteConfig route) {
+    std::unique_lock lock(mutex_);
     routes_.push_back(std::move(route));
+}
+
+void L7Router::SetDefaultPool(std::string pool_name) {
+    std::unique_lock lock(mutex_);
+    default_pool_ = std::move(pool_name);
+}
+
+std::string L7Router::GetDefaultPool() const {
+    std::shared_lock lock(mutex_);
+    return default_pool_;
+}
+
+std::vector<L7RouteConfig> L7Router::GetRoutes() const {
+    std::shared_lock lock(mutex_);
+    return routes_;
+}
+
+void L7Router::ClearRoutes() noexcept {
+    std::unique_lock lock(mutex_);
+    routes_.clear();
 }
 
 bool L7Router::HostMatches(std::string_view pattern, std::string_view host) noexcept {
@@ -102,6 +123,7 @@ std::string L7Router::StripPrefix(std::string_view prefix, std::string_view path
 }
 
 std::optional<RouteMatchResult> L7Router::Match(std::string_view host, std::string_view path) const {
+    std::shared_lock lock(mutex_);
     const L7RouteConfig* best_route = nullptr;
     int best_host_tier = 0; // 3 = exact, 2 = wildcard (*.), 1 = catch-all (* / empty)
     size_t best_path_len = 0;
@@ -138,6 +160,8 @@ std::optional<RouteMatchResult> L7Router::Match(std::string_view host, std::stri
         res.route = best_route;
         res.target_pool = best_route->target_pool;
         res.matched = true;
+        res.strip_prefix = best_route->strip_prefix;
+        res.inject_headers = best_route->inject_headers;
         if (best_route->strip_prefix) {
             res.rewritten_path = StripPrefix(best_route->path_prefix, path);
         } else {
@@ -153,6 +177,8 @@ std::optional<RouteMatchResult> L7Router::Match(std::string_view host, std::stri
         res.target_pool = default_pool_;
         res.rewritten_path = std::string(path);
         res.matched = true;
+        res.strip_prefix = false;
+        res.inject_headers = true;
         return res;
     }
 

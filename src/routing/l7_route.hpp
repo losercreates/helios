@@ -23,6 +23,8 @@ struct RouteMatchResult {
     std::string target_pool;
     std::string rewritten_path;
     bool matched{false};
+    bool strip_prefix{false};
+    bool inject_headers{true};
 };
 
 } // namespace helios

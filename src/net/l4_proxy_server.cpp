@@ -92,7 +92,6 @@ void L4ProxyServer::AddRoute(L7RouteConfig route) {
 }
 
 void L4ProxyServer::SetDefaultPool(std::string pool_name) {
-    config_.default_pool = pool_name;
     router_.SetDefaultPool(std::move(pool_name));
 }
 
@@ -671,10 +670,10 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                 inj_opts.client_ip = data.client_ip;
                 inj_opts.client_proto = "http";
                 inj_opts.host = std::string(host);
-                if (match_opt->route && match_opt->route->strip_prefix) {
+                if (match_opt->strip_prefix) {
                     inj_opts.rewritten_path = match_opt->rewritten_path;
                 }
-                if (match_opt->route && !match_opt->route->inject_headers) {
+                if (!match_opt->inject_headers) {
                     inj_opts.inject_forwarded_for = false;
                     inj_opts.inject_forwarded_proto = false;
                     inj_opts.inject_forwarded_host = false;
