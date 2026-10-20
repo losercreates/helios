@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <deque>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <unordered_map>
 
@@ -24,8 +25,7 @@ struct PooledConnection {
     std::chrono::steady_clock::time_point idle_since{};
 };
 
-// Thread-isolated HTTP keep-alive backend connection pool
-// Enforces shared-nothing architecture per worker with zero cross-thread locking.
+// Thread-safe HTTP keep-alive backend connection pool
 class BackendConnectionPool {
 public:
     using Config = BackendConnectionPoolConfig;
@@ -62,15 +62,17 @@ public:
     void Clear();
 
     // Queries
-    [[nodiscard]] size_t TotalIdleCount() const noexcept { return total_idle_count_; }
+    [[nodiscard]] size_t TotalIdleCount() const noexcept;
     [[nodiscard]] size_t IdleCountForBackend(uint32_t backend_id) const noexcept;
-    [[nodiscard]] const BackendConnectionPoolConfig& GetConfig() const noexcept { return config_; }
-    void SetConfig(BackendConnectionPoolConfig config) noexcept { config_ = config; }
+    [[nodiscard]] BackendConnectionPoolConfig GetConfig() const noexcept;
+    void SetConfig(BackendConnectionPoolConfig config) noexcept;
 
 private:
     void CloseFd(int fd) noexcept;
-    void EvictOldestGlobally();
+    void EvictOldestGlobally(); // Assumes mutex_ is locked
+    void ClearLocked() noexcept; // Assumes mutex_ is locked
 
+    mutable std::mutex mutex_;
     BackendConnectionPoolConfig config_;
     SocketCloser closer_;
     size_t total_idle_count_{0};

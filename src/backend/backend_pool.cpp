@@ -14,17 +14,19 @@ BackendConnectionPool::~BackendConnectionPool() {
     Clear();
 }
 
-BackendConnectionPool::BackendConnectionPool(BackendConnectionPool&& other) noexcept
-    : config_(other.config_),
-      closer_(std::move(other.closer_)),
-      total_idle_count_(other.total_idle_count_),
-      pools_(std::move(other.pools_)) {
+BackendConnectionPool::BackendConnectionPool(BackendConnectionPool&& other) noexcept {
+    std::lock_guard<std::mutex> lock(other.mutex_);
+    config_ = other.config_;
+    closer_ = std::move(other.closer_);
+    total_idle_count_ = other.total_idle_count_;
+    pools_ = std::move(other.pools_);
     other.total_idle_count_ = 0;
 }
 
 BackendConnectionPool& BackendConnectionPool::operator=(BackendConnectionPool&& other) noexcept {
     if (this != &other) {
-        Clear();
+        std::scoped_lock lock(mutex_, other.mutex_);
+        ClearLocked();
         config_ = other.config_;
         closer_ = std::move(other.closer_);
         total_idle_count_ = other.total_idle_count_;
@@ -43,12 +45,28 @@ void BackendConnectionPool::CloseFd(int fd) noexcept {
     }
 }
 
+size_t BackendConnectionPool::TotalIdleCount() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return total_idle_count_;
+}
+
 size_t BackendConnectionPool::IdleCountForBackend(uint32_t backend_id) const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = pools_.find(backend_id);
     if (it == pools_.end()) {
         return 0;
     }
     return it->second.size();
+}
+
+BackendConnectionPoolConfig BackendConnectionPool::GetConfig() const noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return config_;
+}
+
+void BackendConnectionPool::SetConfig(BackendConnectionPoolConfig config) noexcept {
+    std::lock_guard<std::mutex> lock(mutex_);
+    config_ = config;
 }
 
 void BackendConnectionPool::EvictOldestGlobally() {
@@ -85,6 +103,7 @@ void BackendConnectionPool::EvictOldestGlobally() {
 }
 
 std::optional<int> BackendConnectionPool::Acquire(uint32_t backend_id, TimePoint now) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = pools_.find(backend_id);
     if (it == pools_.end()) {
         return std::nullopt;
@@ -134,6 +153,7 @@ bool BackendConnectionPool::Release(uint32_t backend_id, int fd, TimePoint now) 
         return false;
     }
 
+    std::lock_guard<std::mutex> lock(mutex_);
     if (config_.max_idle_per_backend == 0 || config_.max_total_idle == 0) {
         CloseFd(fd);
         return false;
@@ -167,6 +187,7 @@ bool BackendConnectionPool::Release(uint32_t backend_id, int fd, TimePoint now) 
 }
 
 size_t BackendConnectionPool::Purge(uint32_t backend_id) {
+    std::lock_guard<std::mutex> lock(mutex_);
     auto it = pools_.find(backend_id);
     if (it == pools_.end()) {
         return 0;
@@ -189,6 +210,7 @@ size_t BackendConnectionPool::Purge(uint32_t backend_id) {
 }
 
 size_t BackendConnectionPool::ReapExpired(TimePoint now) {
+    std::lock_guard<std::mutex> lock(mutex_);
     size_t reaped_count = 0;
 
     for (auto it = pools_.begin(); it != pools_.end();) {
@@ -219,7 +241,7 @@ size_t BackendConnectionPool::ReapExpired(TimePoint now) {
     return reaped_count;
 }
 
-void BackendConnectionPool::Clear() {
+void BackendConnectionPool::ClearLocked() noexcept {
     for (auto& [b_id, pool] : pools_) {
         (void)b_id;
         for (const auto& conn : pool) {
@@ -228,6 +250,11 @@ void BackendConnectionPool::Clear() {
     }
     pools_.clear();
     total_idle_count_ = 0;
+}
+
+void BackendConnectionPool::Clear() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ClearLocked();
 }
 
 } // namespace helios
