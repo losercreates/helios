@@ -17,6 +17,8 @@ add_executable(helios_unit_tests
     test_prometheus_server.cpp
     test_config_loader.cpp
     test_access_logger.cpp
+    test_l7_router.cpp
+    test_http_rewriter.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE

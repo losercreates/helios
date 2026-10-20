@@ -8,6 +8,7 @@
 #include <vector>
 #include <algorithm>
 #include <iostream>
+#include <cstring>
 #include "lb/weighted_round_robin.hpp"
 #include "lb/least_connections.hpp"
 #include "lb/consistent_hash.hpp"
@@ -39,6 +40,15 @@ L4ProxyServer::L4ProxyServer(Config config)
         backend_pool_ = std::make_unique<BackendConnectionPool>(config_.connection_pool_config);
     }
 
+    if (config_.enable_l7_routing) {
+        for (const auto& r : config_.routes) {
+            router_.AddRoute(r);
+        }
+        if (!config_.default_pool.empty()) {
+            router_.SetDefaultPool(config_.default_pool);
+        }
+    }
+
     accept_ctx_.role = ProxyOpRole::Accept;
 }
 
@@ -48,6 +58,61 @@ L4ProxyServer::~L4ProxyServer() {
 
 void L4ProxyServer::AddBackend(std::string host, uint16_t port, uint32_t weight) {
     lb_->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port, weight));
+}
+
+void L4ProxyServer::AddNamedPool(std::string name, std::string algorithm, bool enable_pool, BackendConnectionPoolConfig pool_cfg) {
+    NamedPool np;
+    np.name = name;
+    np.algorithm = algorithm;
+    if (algorithm == "weighted_round_robin") {
+        np.lb = std::make_unique<WeightedRoundRobinLoadBalancer>();
+    } else if (algorithm == "least_connections") {
+        np.lb = std::make_unique<LeastConnectionsLoadBalancer>();
+    } else if (algorithm == "consistent_hash") {
+        np.lb = std::make_unique<ConsistentHashLoadBalancer>();
+    } else {
+        np.lb = std::make_unique<RoundRobinLoadBalancer>();
+    }
+    if (enable_pool) {
+        np.pool = std::make_unique<BackendConnectionPool>(pool_cfg);
+    }
+    named_pools_.insert_or_assign(name, std::move(np));
+}
+
+void L4ProxyServer::AddBackendToNamedPool(const std::string& pool_name, std::string host, uint16_t port, uint32_t weight) {
+    auto it = named_pools_.find(pool_name);
+    if (it != named_pools_.end() && it->second.lb) {
+        it->second.lb->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port, weight));
+    }
+}
+
+void L4ProxyServer::AddRoute(L7RouteConfig route) {
+    config_.enable_l7_routing = true;
+    router_.AddRoute(std::move(route));
+}
+
+void L4ProxyServer::SetDefaultPool(std::string pool_name) {
+    config_.default_pool = pool_name;
+    router_.SetDefaultPool(std::move(pool_name));
+}
+
+std::shared_ptr<Backend> L4ProxyServer::SelectBackendFromPool(const std::string& pool_name) {
+    auto it = named_pools_.find(pool_name);
+    if (it != named_pools_.end() && it->second.lb) {
+        return it->second.lb->SelectBackend();
+    }
+    if (lb_) {
+        return lb_->SelectBackend();
+    }
+    return nullptr;
+}
+
+BackendConnectionPool* L4ProxyServer::GetPoolForName(const std::string& pool_name) noexcept {
+    auto it = named_pools_.find(pool_name);
+    if (it != named_pools_.end()) {
+        return it->second.pool.get();
+    }
+    return backend_pool_.get();
 }
 
 void L4ProxyServer::EnableConnectionPooling(BackendConnectionPoolConfig config) {
@@ -93,6 +158,11 @@ void L4ProxyServer::Stop() {
 
     if (backend_pool_) {
         backend_pool_->Clear();
+    }
+    for (auto& [name, np] : named_pools_) {
+        if (np.pool) {
+            np.pool->Clear();
+        }
     }
 
     // Initiate close on all active connections
@@ -259,6 +329,59 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     int client_fd = event.result;
     total_accepted_connections_.fetch_add(1, std::memory_order_relaxed);
     SocketUtils::SetTcpNoDelay(client_fd);
+
+    if (config_.enable_l7_routing) {
+        uint64_t conn_id = next_conn_id_++;
+        auto conn = std::make_shared<ConnectionPair>(conn_id, engine_, client_fd);
+        conn->SetBackendFd(-1);
+
+        conn->SetCleanupCallback([this](uint64_t id) {
+            connections_.erase(id);
+            paused_connections_.erase(id);
+            active_connections_.fetch_sub(1, std::memory_order_relaxed);
+        });
+
+        auto data = std::make_unique<ConnectionStateData>();
+        data->conn = conn;
+        data->l7_routed = false;
+
+        char client_ip_buf[INET_ADDRSTRLEN] = "127.0.0.1";
+        inet_ntop(AF_INET, &(accept_client_addr_.sin_addr), client_ip_buf, INET_ADDRSTRLEN);
+        data->client_ip = client_ip_buf;
+        data->client_port = ntohs(accept_client_addr_.sin_port);
+        data->access_logger = access_logger_;
+        data->metrics = metrics_;
+
+        if (metrics_) {
+            metrics_->requests_total.fetch_add(1, std::memory_order_relaxed);
+            metrics_->active_connections.fetch_add(1, std::memory_order_relaxed);
+        }
+
+        data->client_read_ctx.role = ProxyOpRole::ClientRead;
+        data->client_read_ctx.conn = conn;
+
+        data->client_write_ctx.role = ProxyOpRole::ClientWrite;
+        data->client_write_ctx.conn = conn;
+
+        data->backend_read_ctx.role = ProxyOpRole::BackendRead;
+        data->backend_read_ctx.conn = conn;
+
+        data->backend_write_ctx.role = ProxyOpRole::BackendWrite;
+        data->backend_write_ctx.conn = conn;
+
+        data->cancel_backend_read_ctx.role = ProxyOpRole::Cancel;
+        data->cancel_backend_read_ctx.conn = conn;
+
+        TryStartClientRead(*data);
+        engine_.Submit();
+
+        connections_[conn_id] = std::move(data);
+        active_connections_.fetch_add(1, std::memory_order_relaxed);
+
+        ScheduleAccept();
+        return;
+    }
+
     auto backend = lb_->SelectBackend();
     if (!backend) {
         // No backend available
@@ -386,8 +509,9 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
     if (event.result < 0) {
         if (backend) {
             backend->ReportConnectionFailure();
-            if (backend_pool_) {
-                backend_pool_->Purge(backend->GetId());
+            auto* pool_ptr = GetPoolForName(data.matched_pool);
+            if (pool_ptr) {
+                pool_ptr->Purge(backend->GetId());
             }
         }
         data.status_code = 502;
@@ -408,7 +532,14 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
 
     conn->TransitionTo(ConnectionState::Established);
 
-    TryStartClientRead(data);
+    if (data.backend_write_ctx.buf) {
+        Buffer* bbuf = data.backend_write_ctx.buf;
+        conn->SetBackendReusable(false);
+        engine_.PrepWrite(conn->GetBackendFd(), bbuf->ReadPtr(), bbuf->ReadableBytes(), 0, &data.backend_write_ctx);
+        conn->IncrementPendingCqe();
+    } else {
+        TryStartClientRead(data);
+    }
     TryStartBackendRead(data);
     engine_.Submit();
 
@@ -470,6 +601,219 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
     data.client_read_ctx.buf = nullptr;
 
     if (buf) {
+        if (config_.enable_l7_routing && !data.l7_routed) {
+            if (event.result > 0) {
+                data.bytes_received += static_cast<uint64_t>(event.result);
+                if (metrics_) {
+                    metrics_->bytes_read_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
+                }
+                data.raw_request_accumulated.append(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
+                buffer_pool_.Release(buf);
+                buf = nullptr;
+
+                data.parser.Reset();
+                ParseResult parse_res = data.parser.Parse(data.raw_request_accumulated);
+
+                if (parse_res.IsError() || (parse_res.IsIncomplete() && data.raw_request_accumulated.size() > kDefaultMaxHeaderSize)) {
+                    static constexpr std::string_view k400Response =
+                        "HTTP/1.1 400 Bad Request\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Content-Length: 15\r\n"
+                        "Connection: close\r\n\r\n"
+                        "400 Bad Request";
+                    ::send(conn->GetClientFd(), k400Response.data(), k400Response.size(), MSG_NOSIGNAL);
+                    data.status_code = 400;
+                    conn->InitiateClose("HTTP Bad Request");
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+
+                if (parse_res.IsIncomplete()) {
+                    TryStartClientRead(data);
+                    engine_.Submit();
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+
+                // Headers complete! Perform L7 routing
+                const auto& req = data.parser.GetRequest();
+                auto host_hdr = req.GetHeader("Host");
+                std::string_view host = host_hdr.value_or("");
+                auto colon_pos = host.find(':');
+                if (colon_pos != std::string_view::npos) {
+                    host = host.substr(0, colon_pos);
+                }
+                std::string_view path = req.uri;
+
+                auto match_opt = router_.Match(host, path);
+                if (!match_opt) {
+                    static constexpr std::string_view k404Response =
+                        "HTTP/1.1 404 Not Found\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Content-Length: 13\r\n"
+                        "Connection: close\r\n\r\n"
+                        "404 Not Found";
+                    ::send(conn->GetClientFd(), k404Response.data(), k404Response.size(), MSG_NOSIGNAL);
+                    data.status_code = 404;
+                    conn->InitiateClose("HTTP Route Not Found");
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+
+                data.l7_routed = true;
+                data.matched_pool = match_opt->target_pool;
+                data.method = std::string(req.method_str);
+                data.uri = std::string(req.uri);
+                data.http_version = "HTTP/" + std::to_string(req.http_major) + "." + std::to_string(req.http_minor);
+                data.parsed_request = true;
+
+                HeaderInjectionOptions inj_opts;
+                inj_opts.client_ip = data.client_ip;
+                inj_opts.client_proto = "http";
+                inj_opts.host = std::string(host);
+                if (match_opt->route && match_opt->route->strip_prefix) {
+                    inj_opts.rewritten_path = match_opt->rewritten_path;
+                }
+                if (match_opt->route && !match_opt->route->inject_headers) {
+                    inj_opts.inject_forwarded_for = false;
+                    inj_opts.inject_forwarded_proto = false;
+                    inj_opts.inject_forwarded_host = false;
+                    inj_opts.inject_request_id = false;
+                }
+                std::string rewritten_request = HttpRewriter::RewriteRequest(data.raw_request_accumulated, inj_opts);
+
+                auto backend = SelectBackendFromPool(data.matched_pool);
+                if (!backend) {
+                    static constexpr std::string_view k503Response =
+                        "HTTP/1.1 503 Service Unavailable\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Content-Length: 23\r\n"
+                        "Connection: close\r\n\r\n"
+                        "503 Service Unavailable";
+                    ::send(conn->GetClientFd(), k503Response.data(), k503Response.size(), MSG_NOSIGNAL);
+                    data.status_code = 503;
+                    conn->InitiateClose("No backend available in pool");
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+
+                if (!backend->GetCircuitBreaker().AllowRequest()) {
+                    auto* pool_ptr = GetPoolForName(data.matched_pool);
+                    if (pool_ptr) {
+                        pool_ptr->Purge(backend->GetId());
+                    }
+                    static constexpr std::string_view k503Response =
+                        "HTTP/1.1 503 Service Unavailable\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Content-Length: 23\r\n"
+                        "Connection: close\r\n\r\n"
+                        "503 Service Unavailable";
+                    ::send(conn->GetClientFd(), k503Response.data(), k503Response.size(), MSG_NOSIGNAL);
+                    data.status_code = 503;
+                    conn->InitiateClose("Circuit breaker open");
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+
+                data.backend = backend;
+                data.backend_addr = backend->GetSockAddr();
+                data.upstream_endpoint = backend->GetHost() + ":" + std::to_string(backend->GetPort());
+                backend->IncrementActiveConnections();
+
+                int backend_fd = -1;
+                bool is_pooled = false;
+                auto* pool_ptr = GetPoolForName(data.matched_pool);
+                if (pool_ptr) {
+                    auto pooled_opt = pool_ptr->Acquire(backend->GetId());
+                    if (pooled_opt) {
+                        backend_fd = *pooled_opt;
+                        is_pooled = true;
+                        if (metrics_) {
+                            metrics_->backend_pool_hits_total.fetch_add(1, std::memory_order_relaxed);
+                        }
+                    }
+                }
+
+                if (backend_fd < 0) {
+                    backend_fd = SocketUtils::CreateTcpSocket();
+                    if (backend_fd < 0) {
+                        static constexpr std::string_view k500Response =
+                            "HTTP/1.1 500 Internal Server Error\r\n"
+                            "Content-Length: 0\r\n"
+                            "Connection: close\r\n\r\n";
+                        ::send(conn->GetClientFd(), k500Response.data(), k500Response.size(), MSG_NOSIGNAL);
+                        data.status_code = 500;
+                        conn->InitiateClose("Failed to create backend socket");
+                        conn->DecrementPendingCqe();
+                        return;
+                    }
+                    SocketUtils::SetTcpNoDelay(backend_fd);
+                    if (metrics_) {
+                        metrics_->backend_pool_misses_total.fetch_add(1, std::memory_order_relaxed);
+                    }
+                }
+
+                conn->SetBackendFd(backend_fd);
+
+                if (pool_ptr) {
+                    conn->SetBackendRecycleCallback([this, pool_name = data.matched_pool, backend_id = backend->GetId()](int fd) -> bool {
+                        auto* p = GetPoolForName(pool_name);
+                        if (!p) return false;
+                        return p->Release(backend_id, fd);
+                    });
+                }
+
+                Buffer* out_buf = buffer_pool_.Acquire();
+                if (!out_buf) {
+                    conn->InitiateClose("Buffer pool exhausted");
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+
+                size_t to_write = std::min(out_buf->capacity, rewritten_request.size());
+                std::memcpy(out_buf->data, rewritten_request.data(), to_write);
+                out_buf->AdvanceWrite(to_write);
+                data.backend_write_ctx.buf = out_buf;
+
+                if (is_pooled) {
+                    conn->TransitionTo(ConnectionState::Established);
+                    conn->SetBackendReusable(false);
+                    engine_.PrepWrite(conn->GetBackendFd(), out_buf->ReadPtr(), out_buf->ReadableBytes(), 0, &data.backend_write_ctx);
+                    conn->IncrementPendingCqe();
+                    TryStartBackendRead(data);
+                    engine_.Submit();
+                } else {
+                    data.connect_ctx.role = ProxyOpRole::Connect;
+                    data.connect_ctx.conn = conn;
+
+                    conn->TransitionTo(ConnectionState::ConnectingBackend);
+                    engine_.PrepConnect(backend_fd, reinterpret_cast<const sockaddr*>(&data.backend_addr), sizeof(data.backend_addr), &data.connect_ctx);
+                    conn->IncrementPendingCqe();
+                    engine_.Submit();
+                }
+
+                conn->DecrementPendingCqe();
+                return;
+            } else if (event.result == 0) {
+                buffer_pool_.Release(buf);
+                conn->InitiateClose("Client closed before sending request");
+                conn->DecrementPendingCqe();
+                return;
+            } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
+                data.client_read_ctx.buf = buf;
+                engine_.PrepRead(conn->GetClientFd(), buf->data, buf->capacity, 0, &data.client_read_ctx);
+                conn->IncrementPendingCqe();
+                data.client_read_active = true;
+                conn->DecrementPendingCqe();
+                return;
+            } else {
+                buffer_pool_.Release(buf);
+                conn->InitiateClose("Client read error");
+                conn->DecrementPendingCqe();
+                return;
+            }
+        }
+
         if (event.result > 0) {
             data.bytes_received += static_cast<uint64_t>(event.result);
             if (metrics_) {
@@ -745,6 +1089,11 @@ void L4ProxyServer::ResumePausedReads() {
 void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
     if (backend_pool_) {
         backend_pool_->ReapExpired(now);
+    }
+    for (auto& [name, np] : named_pools_) {
+        if (np.pool) {
+            np.pool->ReapExpired(now);
+        }
     }
 
     if (connections_.empty()) return;

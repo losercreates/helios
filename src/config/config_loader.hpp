@@ -3,6 +3,7 @@
 #include "worker.hpp"
 #include "metrics/prometheus_server.hpp"
 #include "logging/access_logger.hpp"
+#include "routing/l7_route.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -103,6 +104,8 @@ struct LoggingConfig {
 struct HeliosConfig {
     ServerConfig server;
     std::vector<BackendPoolConfig> backend_pools;
+    std::vector<L7RouteConfig> routes;
+    std::string default_pool;
     TimeoutsConfig timeouts;
     HealthCheckConfig health_check;
     MetricsConfig metrics;

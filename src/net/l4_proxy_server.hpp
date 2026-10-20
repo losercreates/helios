@@ -12,6 +12,9 @@
 #include "backend/backend_pool.hpp"
 #include "logging/access_logger.hpp"
 #include "metrics/metrics_collector.hpp"
+#include "routing/l7_router.hpp"
+#include "http/http_rewriter.hpp"
+#include "http/http_parser.hpp"
 
 #include <unordered_map>
 #include <unordered_set>
@@ -54,6 +57,16 @@ public:
         bool enable_connection_pooling{false};
         BackendConnectionPoolConfig connection_pool_config{};
         std::string lb_algorithm{"round_robin"};
+        bool enable_l7_routing{false};
+        std::vector<L7RouteConfig> routes{};
+        std::string default_pool{};
+    };
+
+    struct NamedPool {
+        std::string name;
+        std::string algorithm{"round_robin"};
+        std::unique_ptr<LoadBalancer> lb;
+        std::unique_ptr<BackendConnectionPool> pool;
     };
 
     L4ProxyServer();
@@ -69,6 +82,15 @@ public:
     // Load balancer configuration
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
     LoadBalancer& GetLoadBalancer() noexcept { return *lb_; }
+
+    // Named pool and L7 route management
+    void AddNamedPool(std::string name, std::string algorithm = "round_robin", bool enable_pool = false, BackendConnectionPoolConfig pool_cfg = {});
+    void AddBackendToNamedPool(const std::string& pool_name, std::string host, uint16_t port, uint32_t weight = 1);
+    void AddRoute(L7RouteConfig route);
+    void SetDefaultPool(std::string pool_name);
+    [[nodiscard]] L7Router& GetRouter() noexcept { return router_; }
+    [[nodiscard]] const L7Router& GetRouter() const noexcept { return router_; }
+    [[nodiscard]] const std::unordered_map<std::string, NamedPool>& GetNamedPools() const noexcept { return named_pools_; }
 
     // Initialization & Lifecycle
     bool Start();
@@ -121,6 +143,11 @@ private:
 
         bool client_read_paused{false};
         bool backend_read_paused{false};
+
+        bool l7_routed{false};
+        HttpParser parser{};
+        std::string matched_pool;
+        std::string raw_request_accumulated;
 
         std::shared_ptr<Backend> backend;
         std::shared_ptr<AccessLogger> access_logger;
@@ -184,6 +211,9 @@ private:
     void CheckTimeouts(std::chrono::steady_clock::time_point now);
     void CheckTimeouts();
 
+    std::shared_ptr<Backend> SelectBackendFromPool(const std::string& pool_name);
+    BackendConnectionPool* GetPoolForName(const std::string& pool_name) noexcept;
+
     Config config_;
     RingEngine engine_;
     BufferPool buffer_pool_;
@@ -210,6 +240,9 @@ private:
     std::unique_ptr<BackendConnectionPool> backend_pool_;
     std::shared_ptr<AccessLogger> access_logger_;
     std::shared_ptr<WorkerMetrics> metrics_;
+
+    L7Router router_;
+    std::unordered_map<std::string, NamedPool> named_pools_;
 };
 
 } // namespace helios

@@ -756,3 +756,266 @@ TEST_F(L4ProxyIntegrationTest, BackendConnectionPoolReapsExpiredOnTimeout) {
 
     StopProxyLoop();
 }
+
+// 15. L7 Host-Based Routing and Proxy Header Injection
+TEST_F(L4ProxyIntegrationTest, HostBasedL7RoutingAndHeaderInjection) {
+    TestTcpBackend backend_api;
+    ASSERT_TRUE(backend_api.Start());
+
+    TestTcpBackend backend_web;
+    ASSERT_TRUE(backend_web.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.enable_l7_routing = true;
+
+    L4ProxyServer proxy(config);
+    proxy.AddNamedPool("api_pool", "round_robin");
+    proxy.AddBackendToNamedPool("api_pool", "127.0.0.1", backend_api.GetPort());
+
+    proxy.AddNamedPool("web_pool", "round_robin");
+    proxy.AddBackendToNamedPool("web_pool", "127.0.0.1", backend_web.GetPort());
+
+    L7RouteConfig r_api;
+    r_api.name = "api_route";
+    r_api.host = "api.example.com";
+    r_api.path_prefix = "/";
+    r_api.target_pool = "api_pool";
+    proxy.AddRoute(std::move(r_api));
+
+    L7RouteConfig r_web;
+    r_web.name = "web_route";
+    r_web.host = "web.example.com";
+    r_web.path_prefix = "/";
+    r_web.target_pool = "web_pool";
+    proxy.AddRoute(std::move(r_web));
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    auto send_request = [&](const std::string& host_header) -> std::string {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        EXPECT_GT(fd, 0);
+        sockaddr_in target_addr{};
+        target_addr.sin_family = AF_INET;
+        target_addr.sin_port = htons(proxy.GetPort());
+        inet_pton(AF_INET, "127.0.0.1", &target_addr.sin_addr);
+        if (connect(fd, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)) != 0) {
+            close(fd);
+            return "";
+        }
+        std::string req = "GET /status HTTP/1.1\r\nHost: " + host_header + "\r\nConnection: close\r\n\r\n";
+        send(fd, req.data(), req.size(), 0);
+        shutdown(fd, SHUT_WR);
+
+        std::string resp;
+        char buf[512];
+        while (true) {
+            ssize_t n = recv(fd, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            resp.append(buf, static_cast<size_t>(n));
+            if (resp.find("\r\n\r\n") != std::string::npos) break;
+        }
+        close(fd);
+        return resp;
+    };
+
+    // Request to api.example.com -> api_pool
+    std::string resp_api = send_request("api.example.com");
+    EXPECT_NE(resp_api.find("X-Forwarded-Host: api.example.com"), std::string::npos);
+    EXPECT_NE(resp_api.find("X-Forwarded-Proto: http"), std::string::npos);
+    EXPECT_NE(resp_api.find("X-Forwarded-For: 127.0.0.1"), std::string::npos);
+    EXPECT_NE(resp_api.find("X-Request-ID: "), std::string::npos);
+    EXPECT_EQ(backend_api.GetAcceptedCount(), 1u);
+    EXPECT_EQ(backend_web.GetAcceptedCount(), 0u);
+
+    // Request to web.example.com -> web_pool
+    std::string resp_web = send_request("web.example.com");
+    EXPECT_NE(resp_web.find("X-Forwarded-Host: web.example.com"), std::string::npos);
+    EXPECT_NE(resp_web.find("X-Forwarded-Proto: http"), std::string::npos);
+    EXPECT_EQ(backend_api.GetAcceptedCount(), 1u);
+    EXPECT_EQ(backend_web.GetAcceptedCount(), 1u);
+
+    StopProxyLoop();
+}
+
+// 16. L7 Path-Based Routing with Prefix Stripping
+TEST_F(L4ProxyIntegrationTest, PathBasedL7RoutingAndPrefixStripping) {
+    TestTcpBackend backend_v1;
+    ASSERT_TRUE(backend_v1.Start());
+
+    TestTcpBackend backend_v2;
+    ASSERT_TRUE(backend_v2.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.enable_l7_routing = true;
+
+    L4ProxyServer proxy(config);
+    proxy.AddNamedPool("v1_pool", "round_robin");
+    proxy.AddBackendToNamedPool("v1_pool", "127.0.0.1", backend_v1.GetPort());
+
+    proxy.AddNamedPool("v2_pool", "round_robin");
+    proxy.AddBackendToNamedPool("v2_pool", "127.0.0.1", backend_v2.GetPort());
+
+    L7RouteConfig r_v1;
+    r_v1.name = "v1_strip";
+    r_v1.path_prefix = "/api/v1";
+    r_v1.target_pool = "v1_pool";
+    r_v1.strip_prefix = true;
+    proxy.AddRoute(std::move(r_v1));
+
+    L7RouteConfig r_v2;
+    r_v2.name = "v2_keep";
+    r_v2.path_prefix = "/api/v2";
+    r_v2.target_pool = "v2_pool";
+    r_v2.strip_prefix = false;
+    proxy.AddRoute(std::move(r_v2));
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    auto send_path_request = [&](const std::string& path) -> std::string {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        EXPECT_GT(fd, 0);
+        sockaddr_in target_addr{};
+        target_addr.sin_family = AF_INET;
+        target_addr.sin_port = htons(proxy.GetPort());
+        inet_pton(AF_INET, "127.0.0.1", &target_addr.sin_addr);
+        if (connect(fd, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)) != 0) {
+            close(fd);
+            return "";
+        }
+        std::string req = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        send(fd, req.data(), req.size(), 0);
+        shutdown(fd, SHUT_WR);
+
+        std::string resp;
+        char buf[512];
+        while (true) {
+            ssize_t n = recv(fd, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            resp.append(buf, static_cast<size_t>(n));
+            if (resp.find("\r\n\r\n") != std::string::npos) break;
+        }
+        close(fd);
+        return resp;
+    };
+
+    // /api/v1/users should have prefix stripped to /users and route to v1_pool
+    std::string resp_v1 = send_path_request("/api/v1/users");
+    EXPECT_NE(resp_v1.find("GET /users HTTP/1.1"), std::string::npos);
+    EXPECT_EQ(backend_v1.GetAcceptedCount(), 1u);
+    EXPECT_EQ(backend_v2.GetAcceptedCount(), 0u);
+
+    // /api/v2/items should keep /api/v2/items and route to v2_pool
+    std::string resp_v2 = send_path_request("/api/v2/items");
+    EXPECT_NE(resp_v2.find("GET /api/v2/items HTTP/1.1"), std::string::npos);
+    EXPECT_EQ(backend_v1.GetAcceptedCount(), 1u);
+    EXPECT_EQ(backend_v2.GetAcceptedCount(), 1u);
+
+    StopProxyLoop();
+}
+
+// 17. Unmatched Route Returns 404 or Falls Back to Default Pool
+TEST_F(L4ProxyIntegrationTest, UnmatchedRouteReturns404OrFallsBackToDefault) {
+    TestTcpBackend backend_default;
+    ASSERT_TRUE(backend_default.Start());
+
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.enable_l7_routing = true;
+
+    L4ProxyServer proxy(config);
+    proxy.AddNamedPool("default_pool", "round_robin");
+    proxy.AddBackendToNamedPool("default_pool", "127.0.0.1", backend_default.GetPort());
+
+    L7RouteConfig r_specific;
+    r_specific.name = "specific";
+    r_specific.path_prefix = "/specific";
+    r_specific.target_pool = "default_pool";
+    proxy.AddRoute(std::move(r_specific));
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    auto send_req = [&](const std::string& path) -> std::string {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        EXPECT_GT(fd, 0);
+        sockaddr_in target_addr{};
+        target_addr.sin_family = AF_INET;
+        target_addr.sin_port = htons(proxy.GetPort());
+        inet_pton(AF_INET, "127.0.0.1", &target_addr.sin_addr);
+        if (connect(fd, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)) != 0) {
+            close(fd);
+            return "";
+        }
+        std::string req = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        send(fd, req.data(), req.size(), 0);
+        shutdown(fd, SHUT_WR);
+
+        std::string resp;
+        char buf[512];
+        while (true) {
+            ssize_t n = recv(fd, buf, sizeof(buf), 0);
+            if (n <= 0) break;
+            resp.append(buf, static_cast<size_t>(n));
+            if (resp.find("\r\n\r\n") != std::string::npos) break;
+        }
+        close(fd);
+        return resp;
+    };
+
+    // Request to unmatched route /unknown with no default pool set -> 404 Not Found
+    std::string resp_404 = send_req("/unknown");
+    EXPECT_NE(resp_404.find("404 Not Found"), std::string::npos);
+    EXPECT_EQ(backend_default.GetAcceptedCount(), 0u);
+
+    // Set default pool and retry -> forwards to default pool
+    proxy.SetDefaultPool("default_pool");
+    std::string resp_fallback = send_req("/unknown");
+    EXPECT_NE(resp_fallback.find("GET /unknown HTTP/1.1"), std::string::npos);
+    EXPECT_EQ(backend_default.GetAcceptedCount(), 1u);
+
+    StopProxyLoop();
+}
+
+// 18. Malformed HTTP Request in L7 Mode Returns 400 Bad Request
+TEST_F(L4ProxyIntegrationTest, MalformedRequestReturns400BadRequest) {
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.enable_l7_routing = true;
+
+    L4ProxyServer proxy(config);
+    L7RouteConfig r;
+    r.path_prefix = "/";
+    r.target_pool = "dummy";
+    proxy.AddRoute(std::move(r));
+
+    ASSERT_TRUE(proxy.Start());
+    StartProxyLoop(proxy);
+
+    int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+    ASSERT_GT(fd, 0);
+    sockaddr_in target_addr{};
+    target_addr.sin_family = AF_INET;
+    target_addr.sin_port = htons(proxy.GetPort());
+    inet_pton(AF_INET, "127.0.0.1", &target_addr.sin_addr);
+    ASSERT_EQ(connect(fd, reinterpret_cast<sockaddr*>(&target_addr), sizeof(target_addr)), 0);
+
+    std::string bad_req = "NOT_A_VALID_HTTP_REQUEST\r\n\r\n";
+    send(fd, bad_req.data(), bad_req.size(), 0);
+
+    std::string resp;
+    char buf[512];
+    while (true) {
+        ssize_t n = recv(fd, buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        resp.append(buf, static_cast<size_t>(n));
+    }
+    close(fd);
+
+    EXPECT_NE(resp.find("400 Bad Request"), std::string::npos);
+
+    StopProxyLoop();
+}

@@ -495,6 +495,30 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
         }
     }
 
+    // 7. L7 Routes Configuration
+    if (const auto* routes_node = root.Find("routes")) {
+        if (routes_node->type == YamlNodeType::Sequence) {
+            config.routes.clear();
+            for (const auto& r_node : routes_node->sequence) {
+                L7RouteConfig r;
+                r.name = r_node["name"].AsString();
+                r.host = r_node["host"].AsString();
+                r.path_prefix = r_node["path_prefix"].AsString("/");
+                r.target_pool = r_node["target_pool"].AsString();
+                if (const auto* sp = r_node.Find("strip_prefix")) {
+                    r.strip_prefix = sp->AsBool(false);
+                }
+                if (const auto* ih = r_node.Find("inject_headers")) {
+                    r.inject_headers = ih->AsBool(true);
+                }
+                config.routes.push_back(std::move(r));
+            }
+        }
+    }
+    if (const auto* val = root.Find("default_pool")) {
+        config.default_pool = val->AsString();
+    }
+
     return true;
 }
 
@@ -611,6 +635,19 @@ bool ConfigLoader::Validate(const HeliosConfig& config, std::string& error_messa
         }
         if (config.logging.flush_interval.count() == 0) {
             error_message = "logging.flush_interval_ms must be > 0";
+            return false;
+        }
+    }
+
+    // 7. Validate L7 routes if present
+    for (size_t i = 0; i < config.routes.size(); ++i) {
+        const auto& r = config.routes[i];
+        if (r.target_pool.empty()) {
+            error_message = "Route at index " + std::to_string(i) + " must specify a non-empty 'target_pool'";
+            return false;
+        }
+        if (r.path_prefix.empty() || r.path_prefix.front() != '/') {
+            error_message = "Route at index " + std::to_string(i) + " path_prefix must start with '/' (got '" + r.path_prefix + "')";
             return false;
         }
     }
