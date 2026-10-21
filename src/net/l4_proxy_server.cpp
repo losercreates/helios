@@ -679,12 +679,12 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                         "Retry-After: 1\r\n"
                         "Connection: close\r\n\r\n"
                         "429 Too Many Requests";
-                    ::send(conn->GetClientFd(), k429Response.data(), k429Response.size(), MSG_NOSIGNAL);
-                    data.status_code = 429;
-                    conn->InitiateClose("HTTP Rate Limit Exceeded");
                     if (metrics_) {
                         metrics_->rate_limit_rejected_total.fetch_add(1, std::memory_order_relaxed);
                     }
+                    ::send(conn->GetClientFd(), k429Response.data(), k429Response.size(), MSG_NOSIGNAL);
+                    data.status_code = 429;
+                    conn->InitiateClose("HTTP Rate Limit Exceeded");
                     conn->DecrementPendingCqe();
                     return;
                 }
@@ -1169,12 +1169,12 @@ void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
                     "Content-Length: 15\r\n"
                     "Connection: close\r\n\r\n"
                     "Request Timeout";
-                ::send(data->conn->GetClientFd(), k408Response.data(), k408Response.size(), MSG_NOSIGNAL);
-                data->status_code = 408;
-                data->conn->InitiateClose("HTTP Header Read Timeout (Slowloris)");
                 if (metrics_) {
                     metrics_->slowloris_rejected_total.fetch_add(1, std::memory_order_relaxed);
                 }
+                ::send(data->conn->GetClientFd(), k408Response.data(), k408Response.size(), MSG_NOSIGNAL);
+                data->status_code = 408;
+                data->conn->InitiateClose("HTTP Header Read Timeout (Slowloris)");
                 continue;
             }
         }

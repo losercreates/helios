@@ -202,7 +202,7 @@ TEST_F(SecurityIntegrationTest, L7RateLimitingReturns429TooManyRequests) {
     config.listen_port = 0;
     config.enable_l7_routing = true;
     config.security.rate_limit.enabled = true;
-    config.security.rate_limit.rate_per_sec = 2.0;
+    config.security.rate_limit.rate_per_sec = 0.5;
     config.security.rate_limit.burst_size = 2;
     config.security.rate_limit.cidr_mask = 32;
 
@@ -246,6 +246,7 @@ TEST_F(SecurityIntegrationTest, L7RateLimitingReturns429TooManyRequests) {
     EXPECT_NE(resp3.find("429 Too Many Requests"), std::string::npos);
     EXPECT_NE(resp3.find("Retry-After: 1"), std::string::npos);
 
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_GE(metrics->rate_limit_rejected_total.load(), 1u);
 
     StopProxyLoop();
@@ -292,6 +293,7 @@ TEST_F(SecurityIntegrationTest, SlowlorisHeaderTimeoutReturns408RequestTimeout) 
     close(client_fd);
 
     EXPECT_NE(resp.find("HTTP/1.1 408 Request Timeout"), std::string::npos);
+    std::this_thread::sleep_for(std::chrono::milliseconds(20));
     EXPECT_GE(metrics->slowloris_rejected_total.load(), 1u);
 
     StopProxyLoop();
