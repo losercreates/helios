@@ -200,6 +200,33 @@ std::string MetricsCollector::RenderPrometheusText() const {
         ss << "helios_backend_pool_misses_total{worker=\"" << w->worker_id << "\"} "
            << w->backend_pool_misses_total.load(std::memory_order_relaxed) << "\n";
     }
+    ss << "\n";
+
+    // 13. helios_acl_rejected_total
+    ss << "# HELP helios_acl_rejected_total Total connections rejected by IP ACL rules\n";
+    ss << "# TYPE helios_acl_rejected_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_acl_rejected_total{worker=\"" << w->worker_id << "\"} "
+           << w->acl_rejected_total.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 14. helios_rate_limit_rejected_total
+    ss << "# HELP helios_rate_limit_rejected_total Total requests or connections rejected by rate limiting\n";
+    ss << "# TYPE helios_rate_limit_rejected_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_rate_limit_rejected_total{worker=\"" << w->worker_id << "\"} "
+           << w->rate_limit_rejected_total.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 15. helios_slowloris_rejected_total
+    ss << "# HELP helios_slowloris_rejected_total Total connections terminated due to slow header read timeout\n";
+    ss << "# TYPE helios_slowloris_rejected_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_slowloris_rejected_total{worker=\"" << w->worker_id << "\"} "
+           << w->slowloris_rejected_total.load(std::memory_order_relaxed) << "\n";
+    }
 
     return ss.str();
 }

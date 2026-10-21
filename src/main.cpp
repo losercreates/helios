@@ -195,6 +195,7 @@ int main(int argc, char* argv[]) {
                             }
 
                             pool.ReloadBackends(new_endpoints);
+                            pool.ReloadSecurity(res.config.security);
                             config = std::move(res.config);
                             std::cout << "[HELIOS] Configuration reloaded successfully ("
                                       << new_endpoints.size() << " backend endpoint(s) active).\n";

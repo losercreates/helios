@@ -66,6 +66,11 @@ struct WorkerMetrics {
     std::atomic<uint64_t> backend_pool_hits_total{0};
     std::atomic<uint64_t> backend_pool_misses_total{0};
 
+    // 6. Security & Traffic Control
+    std::atomic<uint64_t> acl_rejected_total{0};
+    std::atomic<uint64_t> rate_limit_rejected_total{0};
+    std::atomic<uint64_t> slowloris_rejected_total{0};
+
     explicit WorkerMetrics(uint32_t id, std::vector<uint64_t> latency_buckets = {50, 100, 300})
         : worker_id(id), latency_histogram(std::move(latency_buckets)) {}
 

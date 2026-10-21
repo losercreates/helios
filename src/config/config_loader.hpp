@@ -4,6 +4,7 @@
 #include "metrics/prometheus_server.hpp"
 #include "logging/access_logger.hpp"
 #include "routing/l7_route.hpp"
+#include "security/security_config.hpp"
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -110,6 +111,7 @@ struct HeliosConfig {
     HealthCheckConfig health_check;
     MetricsConfig metrics;
     LoggingConfig logging;
+    SecurityConfig security;
 
     [[nodiscard]] WorkerPoolConfig ToWorkerPoolConfig() const;
     [[nodiscard]] PrometheusServer::Config ToPrometheusConfig() const;

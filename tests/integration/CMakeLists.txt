@@ -9,6 +9,7 @@ add_executable(helios_integration_tests
     test_circuit_breaker_integration.cpp
     test_backend_lifecycle_integration.cpp
     test_multi_worker.cpp
+    test_security_integration.cpp
 )
 
 target_compile_definitions(helios_integration_tests PRIVATE
@@ -27,4 +28,4 @@ target_link_libraries(helios_integration_tests PRIVATE
 add_dependencies(helios_integration_tests helios)
 
 include(GoogleTest)
-gtest_discover_tests(helios_integration_tests)
+gtest_discover_tests(helios_integration_tests DISCOVERY_MODE PRE_TEST)

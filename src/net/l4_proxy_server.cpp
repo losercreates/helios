@@ -49,6 +49,22 @@ L4ProxyServer::L4ProxyServer(Config config)
         }
     }
 
+    if (config_.security.acl.enabled) {
+        AclAction default_policy = (config_.security.acl.default_policy == "deny") ? AclAction::Deny : AclAction::Allow;
+        acl_ = std::make_shared<IpAcl>(default_policy, true);
+        for (const auto& r : config_.security.acl.rules) {
+            AclAction action = (r.action == "deny") ? AclAction::Deny : AclAction::Allow;
+            auto parsed = AclRule::Parse(r.cidr, action);
+            if (parsed) {
+                acl_->AddRule(std::move(*parsed));
+            }
+        }
+    }
+
+    if (config_.security.rate_limit.enabled) {
+        rate_limiter_ = std::make_shared<RateLimiter>(config_.security.rate_limit);
+    }
+
     accept_ctx_.role = ProxyOpRole::Accept;
 }
 
@@ -328,6 +344,26 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     int client_fd = event.result;
     total_accepted_connections_.fetch_add(1, std::memory_order_relaxed);
     SocketUtils::SetTcpNoDelay(client_fd);
+
+    // 1. Client IP Access Control List (ACL) Check
+    if (acl_ && !acl_->IsAllowed(accept_client_addr_)) {
+        if (metrics_) {
+            metrics_->acl_rejected_total.fetch_add(1, std::memory_order_relaxed);
+        }
+        ::close(client_fd);
+        ScheduleAccept();
+        return;
+    }
+
+    // 2. Transport-Layer Rate Limiting (Pure L4 Proxy Mode)
+    if (!config_.enable_l7_routing && rate_limiter_ && !rate_limiter_->Allow(accept_client_addr_)) {
+        if (metrics_) {
+            metrics_->rate_limit_rejected_total.fetch_add(1, std::memory_order_relaxed);
+        }
+        ::close(client_fd);
+        ScheduleAccept();
+        return;
+    }
 
     if (config_.enable_l7_routing) {
         uint64_t conn_id = next_conn_id_++;
@@ -634,7 +670,26 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                     return;
                 }
 
-                // Headers complete! Perform L7 routing
+                // Headers complete! Check L7 Rate Limiter
+                if (rate_limiter_ && !rate_limiter_->Allow(data.client_ip)) {
+                    static constexpr std::string_view k429Response =
+                        "HTTP/1.1 429 Too Many Requests\r\n"
+                        "Content-Type: text/plain\r\n"
+                        "Content-Length: 21\r\n"
+                        "Retry-After: 1\r\n"
+                        "Connection: close\r\n\r\n"
+                        "429 Too Many Requests";
+                    ::send(conn->GetClientFd(), k429Response.data(), k429Response.size(), MSG_NOSIGNAL);
+                    data.status_code = 429;
+                    conn->InitiateClose("HTTP Rate Limit Exceeded");
+                    if (metrics_) {
+                        metrics_->rate_limit_rejected_total.fetch_add(1, std::memory_order_relaxed);
+                    }
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+
+                // Perform L7 routing
                 const auto& req = data.parser.GetRequest();
                 auto host_hdr = req.GetHeader("Host");
                 std::string_view host = host_hdr.value_or("");
@@ -1095,10 +1150,35 @@ void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
         }
     }
 
+    if (rate_limiter_) {
+        rate_limiter_->CleanupIdle(std::chrono::milliseconds(60000));
+    }
+
     if (connections_.empty()) return;
 
     for (auto& [id, data] : connections_) {
         if (!data || !data->conn) continue;
+
+        // Slowloris Anti-DoS Defense: Terminate pending L7 connections whose headers take longer than header_read_timeout
+        if (config_.enable_l7_routing && !data->l7_routed) {
+            auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - data->start_time);
+            if (elapsed >= config_.header_read_timeout) {
+                static constexpr std::string_view k408Response =
+                    "HTTP/1.1 408 Request Timeout\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "Content-Length: 15\r\n"
+                    "Connection: close\r\n\r\n"
+                    "Request Timeout";
+                ::send(data->conn->GetClientFd(), k408Response.data(), k408Response.size(), MSG_NOSIGNAL);
+                data->status_code = 408;
+                data->conn->InitiateClose("HTTP Header Read Timeout (Slowloris)");
+                if (metrics_) {
+                    metrics_->slowloris_rejected_total.fetch_add(1, std::memory_order_relaxed);
+                }
+                continue;
+            }
+        }
+
         data->conn->CheckHalfCloseTimeout(now, config_.half_close_timeout);
         data->conn->CheckIdleTimeout(now, config_.idle_timeout);
     }

@@ -32,6 +32,8 @@ struct WorkerPoolConfig {
     std::chrono::milliseconds drain_timeout{15000};
     bool enable_connection_pooling{false};
     BackendConnectionPoolConfig connection_pool_config{};
+    std::chrono::milliseconds header_read_timeout{5000};
+    SecurityConfig security{};
 };
 
 // Represents an isolated, thread-per-core Worker running on a dedicated CPU core.
@@ -114,6 +116,11 @@ public:
     [[nodiscard]] std::shared_ptr<AccessLogger> GetAccessLogger() const noexcept { return access_logger_; }
     void SetMetricsCollector(std::shared_ptr<MetricsCollector> collector);
     [[nodiscard]] std::shared_ptr<MetricsCollector> GetMetricsCollector() const noexcept { return metrics_collector_; }
+    void SetAcl(std::shared_ptr<IpAcl> acl);
+    [[nodiscard]] std::shared_ptr<IpAcl> GetAcl() const noexcept { return acl_; }
+    void SetRateLimiter(std::shared_ptr<RateLimiter> limiter);
+    [[nodiscard]] std::shared_ptr<RateLimiter> GetRateLimiter() const noexcept { return rate_limiter_; }
+    void ReloadSecurity(const SecurityConfig& security);
 
     bool Start();
     void Stop();
@@ -136,6 +143,8 @@ private:
     std::vector<std::tuple<std::string, uint16_t, uint32_t>> initial_backends_;
     std::shared_ptr<AccessLogger> access_logger_;
     std::shared_ptr<MetricsCollector> metrics_collector_;
+    std::shared_ptr<IpAcl> acl_;
+    std::shared_ptr<RateLimiter> rate_limiter_;
     std::atomic<bool> running_{false};
 };
 

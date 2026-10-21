@@ -281,6 +281,49 @@ void WorkerPool::ReloadBackends(const std::vector<BackendInfo>& new_backends) {
     }
 }
 
+void WorkerPool::SetAcl(std::shared_ptr<IpAcl> acl) {
+    acl_ = std::move(acl);
+    for (auto& w : workers_) {
+        w->GetProxy().SetAcl(acl_);
+    }
+}
+
+void WorkerPool::SetRateLimiter(std::shared_ptr<RateLimiter> limiter) {
+    rate_limiter_ = std::move(limiter);
+    for (auto& w : workers_) {
+        w->GetProxy().SetRateLimiter(rate_limiter_);
+    }
+}
+
+void WorkerPool::ReloadSecurity(const SecurityConfig& security) {
+    config_.security = security;
+    if (security.acl.enabled) {
+        AclAction default_policy = (security.acl.default_policy == "deny") ? AclAction::Deny : AclAction::Allow;
+        auto new_acl = std::make_shared<IpAcl>(default_policy, true);
+        for (const auto& r : security.acl.rules) {
+            AclAction action = (r.action == "deny") ? AclAction::Deny : AclAction::Allow;
+            auto parsed = AclRule::Parse(r.cidr, action);
+            if (parsed) {
+                new_acl->AddRule(std::move(*parsed));
+            }
+        }
+        SetAcl(std::move(new_acl));
+    } else {
+        SetAcl(nullptr);
+    }
+
+    if (security.rate_limit.enabled) {
+        if (!rate_limiter_) {
+            SetRateLimiter(std::make_shared<RateLimiter>(security.rate_limit));
+        } else {
+            rate_limiter_->Configure(security.rate_limit.rate_per_sec, security.rate_limit.burst_size, security.rate_limit.cidr_mask);
+            rate_limiter_->SetEnabled(true);
+        }
+    } else if (rate_limiter_) {
+        rate_limiter_->SetEnabled(false);
+    }
+}
+
 bool WorkerPool::Start() {
     if (running_.load(std::memory_order_acquire)) return true;
 
@@ -292,6 +335,22 @@ bool WorkerPool::Start() {
 
     workers_.clear();
     workers_.reserve(count);
+
+    if (!acl_ && config_.security.acl.enabled) {
+        AclAction default_policy = (config_.security.acl.default_policy == "deny") ? AclAction::Deny : AclAction::Allow;
+        acl_ = std::make_shared<IpAcl>(default_policy, true);
+        for (const auto& r : config_.security.acl.rules) {
+            AclAction action = (r.action == "deny") ? AclAction::Deny : AclAction::Allow;
+            auto parsed = AclRule::Parse(r.cidr, action);
+            if (parsed) {
+                acl_->AddRule(std::move(*parsed));
+            }
+        }
+    }
+
+    if (!rate_limiter_ && config_.security.rate_limit.enabled) {
+        rate_limiter_ = std::make_shared<RateLimiter>(config_.security.rate_limit);
+    }
 
     uint16_t target_port = config_.listen_port;
 
@@ -309,6 +368,7 @@ bool WorkerPool::Start() {
         wcfg.proxy_config.buffer_size = config_.buffer_size;
         wcfg.proxy_config.enable_connection_pooling = config_.enable_connection_pooling;
         wcfg.proxy_config.connection_pool_config = config_.connection_pool_config;
+        wcfg.proxy_config.header_read_timeout = config_.header_read_timeout;
 
         auto worker = std::make_unique<Worker>(wcfg.worker_id, wcfg.core_id, std::move(wcfg));
         if (access_logger_) {
@@ -316,6 +376,12 @@ bool WorkerPool::Start() {
         }
         if (metrics_collector_) {
             worker->SetMetrics(metrics_collector_->GetOrCreateWorkerMetrics(wcfg.worker_id));
+        }
+        if (acl_) {
+            worker->GetProxy().SetAcl(acl_);
+        }
+        if (rate_limiter_) {
+            worker->GetProxy().SetRateLimiter(rate_limiter_);
         }
         for (const auto& [host, port, weight] : initial_backends_) {
             worker->AddBackend(host, port, weight);

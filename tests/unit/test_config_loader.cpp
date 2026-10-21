@@ -335,3 +335,102 @@ metrics:
     EXPECT_FALSE(result.success);
     EXPECT_NE(result.error_message.find("metrics.path must start with '/'"), std::string::npos);
 }
+
+TEST(ConfigLoaderTest, ParseSecurityConfigValid) {
+    const std::string yaml = R"(
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+backend_pools:
+  - name: "pool1"
+    algorithm: "round_robin"
+    endpoints:
+      - host: "127.0.0.1"
+        port: 9001
+
+security:
+  acl:
+    enabled: true
+    default_policy: "deny"
+    rules:
+      - cidr: "192.168.1.0/24"
+        action: "allow"
+      - cidr: "10.0.0.1/32"
+        action: "allow"
+  rate_limit:
+    enabled: true
+    rate_per_sec: 50.0
+    burst_size: 15
+    cidr_mask: 24
+  slowloris:
+    enabled: true
+    header_read_timeout_ms: 3500
+)";
+    auto result = ConfigLoader::LoadFromString(yaml);
+    ASSERT_TRUE(result.success) << "Failed to parse: " << result.error_message;
+    EXPECT_TRUE(result.config.security.acl.enabled);
+    EXPECT_EQ(result.config.security.acl.default_policy, "deny");
+    ASSERT_EQ(result.config.security.acl.rules.size(), 2u);
+    EXPECT_EQ(result.config.security.acl.rules[0].cidr, "192.168.1.0/24");
+    EXPECT_EQ(result.config.security.acl.rules[0].action, "allow");
+
+    EXPECT_TRUE(result.config.security.rate_limit.enabled);
+    EXPECT_DOUBLE_EQ(result.config.security.rate_limit.rate_per_sec, 50.0);
+    EXPECT_EQ(result.config.security.rate_limit.burst_size, 15u);
+    EXPECT_EQ(result.config.security.rate_limit.cidr_mask, 24);
+
+    EXPECT_TRUE(result.config.security.slowloris.enabled);
+    EXPECT_EQ(result.config.security.slowloris.header_read_timeout.count(), 3500);
+}
+
+TEST(ConfigLoaderTest, ValidationFailsOnInvalidCidr) {
+    const std::string yaml = R"(
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+backend_pools:
+  - name: "pool1"
+    algorithm: "round_robin"
+    endpoints:
+      - host: "127.0.0.1"
+        port: 9001
+
+security:
+  acl:
+    enabled: true
+    default_policy: "allow"
+    rules:
+      - cidr: "invalid-cidr/99"
+        action: "deny"
+)";
+    auto result = ConfigLoader::LoadFromString(yaml);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.error_message.find("invalid CIDR format"), std::string::npos);
+}
+
+TEST(ConfigLoaderTest, ValidationFailsOnInvalidRateLimit) {
+    const std::string yaml = R"(
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+backend_pools:
+  - name: "pool1"
+    algorithm: "round_robin"
+    endpoints:
+      - host: "127.0.0.1"
+        port: 9001
+
+security:
+  rate_limit:
+    enabled: true
+    rate_per_sec: 0.0
+    burst_size: 10
+)";
+    auto result = ConfigLoader::LoadFromString(yaml);
+    EXPECT_FALSE(result.success);
+    EXPECT_NE(result.error_message.find("rate_per_sec must be > 0"), std::string::npos);
+}
+

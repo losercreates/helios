@@ -1,4 +1,5 @@
 #include "config/config_loader.hpp"
+#include "security/acl.hpp"
 #include <fstream>
 #include <sstream>
 #include <iostream>
@@ -305,6 +306,8 @@ WorkerPoolConfig HeliosConfig::ToWorkerPoolConfig() const {
     wcfg.buffer_size = server.buffer_block_size;
     wcfg.ring_entries = server.io_uring_entries;
     wcfg.drain_timeout = timeouts.drain_timeout;
+    wcfg.header_read_timeout = timeouts.header_read_timeout;
+    wcfg.security = security;
     if (!backend_pools.empty()) {
         wcfg.lb_algorithm = backend_pools[0].algorithm;
         wcfg.enable_connection_pooling = backend_pools[0].enable_connection_pool;
@@ -519,6 +522,56 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
         config.default_pool = val->AsString();
     }
 
+    // Security configuration (ACL, Rate Limiting, Slowloris)
+    if (const auto* sec_node = root.Find("security")) {
+        if (const auto* acl_node = sec_node->Find("acl")) {
+            if (const auto* en = acl_node->Find("enabled")) {
+                config.security.acl.enabled = en->AsBool(false);
+            }
+            if (const auto* dp = acl_node->Find("default_policy")) {
+                config.security.acl.default_policy = dp->AsString("allow");
+            }
+            if (const auto* rules_node = acl_node->Find("rules")) {
+                if (rules_node->IsSequence()) {
+                    for (const auto& r_node : rules_node->sequence) {
+                        AclRuleConfig rule;
+                        if (const auto* cidr = r_node.Find("cidr")) {
+                            rule.cidr = cidr->AsString();
+                        }
+                        if (const auto* act = r_node.Find("action")) {
+                            rule.action = act->AsString("allow");
+                        }
+                        config.security.acl.rules.push_back(std::move(rule));
+                    }
+                }
+            }
+        }
+
+        if (const auto* rl_node = sec_node->Find("rate_limit")) {
+            if (const auto* en = rl_node->Find("enabled")) {
+                config.security.rate_limit.enabled = en->AsBool(false);
+            }
+            if (const auto* rps = rl_node->Find("rate_per_sec")) {
+                config.security.rate_limit.rate_per_sec = rps->AsDouble(100.0);
+            }
+            if (const auto* burst = rl_node->Find("burst_size")) {
+                config.security.rate_limit.burst_size = static_cast<uint32_t>(burst->AsUInt(20));
+            }
+            if (const auto* mask = rl_node->Find("cidr_mask")) {
+                config.security.rate_limit.cidr_mask = static_cast<uint8_t>(mask->AsUInt(32));
+            }
+        }
+
+        if (const auto* sl_node = sec_node->Find("slowloris")) {
+            if (const auto* en = sl_node->Find("enabled")) {
+                config.security.slowloris.enabled = en->AsBool(true);
+            }
+            if (const auto* to = sl_node->Find("header_read_timeout_ms")) {
+                config.security.slowloris.header_read_timeout = std::chrono::milliseconds(to->AsUInt(5000));
+            }
+        }
+    }
+
     return true;
 }
 
@@ -648,6 +701,43 @@ bool ConfigLoader::Validate(const HeliosConfig& config, std::string& error_messa
         }
         if (r.path_prefix.empty() || r.path_prefix.front() != '/') {
             error_message = "Route at index " + std::to_string(i) + " path_prefix must start with '/' (got '" + r.path_prefix + "')";
+            return false;
+        }
+    }
+
+    // 8. Validate security configuration
+    if (config.security.acl.enabled) {
+        std::string def_pol = ToLower(config.security.acl.default_policy);
+        if (def_pol != "allow" && def_pol != "deny") {
+            error_message = "security.acl.default_policy must be 'allow' or 'deny'";
+            return false;
+        }
+        for (size_t i = 0; i < config.security.acl.rules.size(); ++i) {
+            const auto& r = config.security.acl.rules[i];
+            std::string act = ToLower(r.action);
+            if (act != "allow" && act != "deny") {
+                error_message = "security.acl.rules[" + std::to_string(i) + "].action must be 'allow' or 'deny'";
+                return false;
+            }
+            auto parsed = AclRule::Parse(r.cidr, (act == "deny") ? AclAction::Deny : AclAction::Allow);
+            if (!parsed) {
+                error_message = "security.acl.rules[" + std::to_string(i) + "].cidr has invalid CIDR format: '" + r.cidr + "'";
+                return false;
+            }
+        }
+    }
+
+    if (config.security.rate_limit.enabled) {
+        if (config.security.rate_limit.rate_per_sec <= 0.0) {
+            error_message = "security.rate_limit.rate_per_sec must be > 0";
+            return false;
+        }
+        if (config.security.rate_limit.burst_size == 0) {
+            error_message = "security.rate_limit.burst_size must be > 0";
+            return false;
+        }
+        if (config.security.rate_limit.cidr_mask > 32) {
+            error_message = "security.rate_limit.cidr_mask must be <= 32";
             return false;
         }
     }

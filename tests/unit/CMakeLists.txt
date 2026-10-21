@@ -19,6 +19,8 @@ add_executable(helios_unit_tests
     test_access_logger.cpp
     test_l7_router.cpp
     test_http_rewriter.cpp
+    test_security_acl.cpp
+    test_security_rate_limiter.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
@@ -36,4 +38,4 @@ target_compile_definitions(helios_unit_tests PRIVATE
 )
 
 include(GoogleTest)
-gtest_discover_tests(helios_unit_tests)
+gtest_discover_tests(helios_unit_tests DISCOVERY_MODE PRE_TEST)
