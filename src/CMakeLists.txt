@@ -28,6 +28,7 @@ add_library(helios_lib STATIC
     http/http_rewriter.cpp
     security/acl.cpp
     security/rate_limiter.cpp
+    metrics/system_memory.cpp
 )
 
 target_include_directories(helios_lib PUBLIC

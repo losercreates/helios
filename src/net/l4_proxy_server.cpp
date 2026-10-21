@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <arpa/inet.h>
+#include <poll.h>
 #include <string_view>
 #include <array>
 #include <vector>
@@ -226,6 +227,7 @@ void L4ProxyServer::Stop() {
                     case ProxyOpRole::BackendWrite: HandleBackendWriteCompletion(*it->second, events[i]); break;
                     case ProxyOpRole::BackendRead: HandleBackendReadCompletion(*it->second, events[i]); break;
                     case ProxyOpRole::ClientWrite: HandleClientWriteCompletion(*it->second, events[i]); break;
+                    case ProxyOpRole::ClientPoll: HandleClientPollCompletion(*it->second, events[i]); break;
                     default: break;
                 }
             }
@@ -237,6 +239,9 @@ void L4ProxyServer::Stop() {
         }
     }
 
+    for (auto& [id, data] : connections_) {
+        slab_pool_.Release(data);
+    }
     connections_.clear();
     paused_connections_.clear();
     active_connections_.store(0, std::memory_order_relaxed);
@@ -284,6 +289,7 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
                     case ProxyOpRole::BackendWrite: HandleBackendWriteCompletion(*it->second, events[i]); break;
                     case ProxyOpRole::BackendRead: HandleBackendReadCompletion(*it->second, events[i]); break;
                     case ProxyOpRole::ClientWrite: HandleClientWriteCompletion(*it->second, events[i]); break;
+                    case ProxyOpRole::ClientPoll: HandleClientPollCompletion(*it->second, events[i]); break;
                     default: break;
                 }
             }
@@ -308,6 +314,11 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
         }
         metrics_->iouring_cqe_reaped_total.fetch_add(total_reaped, std::memory_order_relaxed);
         metrics_->buffer_pool_utilization.store(buffer_pool_.UtilizationRatio(), std::memory_order_relaxed);
+        metrics_->buffer_pool_bytes_allocated.store(buffer_pool_.TotalAllocatedBytes(), std::memory_order_relaxed);
+        metrics_->buffer_pool_bytes_used.store(buffer_pool_.ActiveAllocatedBytes(), std::memory_order_relaxed);
+        if (backend_pool_) {
+            metrics_->backend_pool_idle_connections.store(backend_pool_->TotalIdleCount(), std::memory_order_relaxed);
+        }
     }
 
     return static_cast<int>(total_reaped) + submitted;
@@ -371,12 +382,16 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
         conn->SetBackendFd(-1);
 
         conn->SetCleanupCallback([this](uint64_t id) {
-            connections_.erase(id);
+            auto it = connections_.find(id);
+            if (it != connections_.end()) {
+                slab_pool_.Release(it->second);
+                connections_.erase(it);
+            }
             paused_connections_.erase(id);
             active_connections_.fetch_sub(1, std::memory_order_relaxed);
         });
 
-        auto data = std::make_unique<ConnectionStateData>();
+        ConnectionStateData* data = slab_pool_.Acquire();
         data->conn = conn;
         data->l7_routed = false;
 
@@ -407,10 +422,14 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
         data->cancel_backend_read_ctx.role = ProxyOpRole::Cancel;
         data->cancel_backend_read_ctx.conn = conn;
 
-        TryStartClientRead(*data);
+        if (config_.enable_lazy_buffer_allocation) {
+            TryStartClientPoll(*data);
+        } else {
+            TryStartClientRead(*data);
+        }
         engine_.Submit();
 
-        connections_[conn_id] = std::move(data);
+        connections_[conn_id] = data;
         active_connections_.fetch_add(1, std::memory_order_relaxed);
 
         ScheduleAccept();
@@ -476,12 +495,16 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     }
 
     conn->SetCleanupCallback([this](uint64_t id) {
-        connections_.erase(id);
+        auto it = connections_.find(id);
+        if (it != connections_.end()) {
+            slab_pool_.Release(it->second);
+            connections_.erase(it);
+        }
         paused_connections_.erase(id);
         active_connections_.fetch_sub(1, std::memory_order_relaxed);
     });
 
-    auto data = std::make_unique<ConnectionStateData>();
+    ConnectionStateData* data = slab_pool_.Acquire();
     data->conn = conn;
     data->backend_addr = backend_addr;
     data->backend = backend;
@@ -518,7 +541,11 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
 
     if (is_pooled) {
         conn->TransitionTo(ConnectionState::Established);
-        TryStartClientRead(*data);
+        if (config_.enable_lazy_buffer_allocation) {
+            TryStartClientPoll(*data);
+        } else {
+            TryStartClientRead(*data);
+        }
         TryStartBackendRead(*data);
         engine_.Submit();
     } else {
@@ -531,7 +558,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
         engine_.Submit();
     }
 
-    connections_[conn_id] = std::move(data);
+    connections_[conn_id] = data;
     active_connections_.fetch_add(1, std::memory_order_relaxed);
 
     ScheduleAccept();
@@ -573,7 +600,11 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
         engine_.PrepWrite(conn->GetBackendFd(), bbuf->ReadPtr(), bbuf->ReadableBytes(), 0, &data.backend_write_ctx);
         conn->IncrementPendingCqe();
     } else {
-        TryStartClientRead(data);
+        if (config_.enable_lazy_buffer_allocation) {
+            TryStartClientPoll(data);
+        } else {
+            TryStartClientRead(data);
+        }
     }
     TryStartBackendRead(data);
     engine_.Submit();
@@ -626,6 +657,52 @@ void L4ProxyServer::TryStartClientRead(ConnectionStateData& data) {
 
     engine_.PrepRead(data.conn->GetClientFd(), buf->data, buf->capacity, 0, &data.client_read_ctx);
     data.conn->IncrementPendingCqe();
+}
+
+void L4ProxyServer::TryStartClientPoll(ConnectionStateData& data) {
+    if (data.client_poll_active || data.client_read_active || data.conn->IsClientReadStopped() || data.conn->IsDraining()) {
+        SetClientReadPaused(data, false);
+        return;
+    }
+
+    if (data.backend_read_paused) {
+        SetClientReadPaused(data, true);
+        return;
+    }
+
+    SetClientReadPaused(data, false);
+    data.client_poll_ctx.role = ProxyOpRole::ClientPoll;
+    data.client_poll_ctx.conn = data.conn;
+    data.client_poll_active = true;
+
+    engine_.PrepPoll(data.conn->GetClientFd(), POLLIN, &data.client_poll_ctx);
+    data.conn->IncrementPendingCqe();
+}
+
+void L4ProxyServer::HandleClientPollCompletion(ConnectionStateData& data, const CompletionEvent& event) {
+    data.client_poll_active = false;
+    auto conn = data.conn;
+
+    if (event.result < 0) {
+        if (event.result != -ECANCELED) {
+            conn->InitiateClose("Client poll error");
+        }
+        conn->DecrementPendingCqe();
+        return;
+    }
+
+    uint32_t revents = static_cast<uint32_t>(event.result);
+    if ((revents & (POLLERR | POLLNVAL)) != 0) {
+        conn->InitiateClose("Client poll socket error");
+        conn->DecrementPendingCqe();
+        return;
+    }
+
+    if ((revents & POLLIN) != 0 || (revents & POLLHUP) != 0) {
+        TryStartClientRead(data);
+        engine_.Submit();
+    }
+    conn->DecrementPendingCqe();
 }
 
 void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const CompletionEvent& event) {
@@ -962,7 +1039,11 @@ void L4ProxyServer::HandleBackendWriteCompletion(ConnectionStateData& data, cons
             // Complete payload write succeeded
             buffer_pool_.Release(buf);
             data.backend_write_ctx.buf = nullptr;
-            TryStartClientRead(data);
+            if (config_.enable_lazy_buffer_allocation) {
+                TryStartClientPoll(data);
+            } else {
+                TryStartClientRead(data);
+            }
         } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
             data.backend_write_ctx.buf = buf;
             engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);

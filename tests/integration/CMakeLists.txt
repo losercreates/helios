@@ -10,6 +10,7 @@ add_executable(helios_integration_tests
     test_backend_lifecycle_integration.cpp
     test_multi_worker.cpp
     test_security_integration.cpp
+    test_memory_optimization_integration.cpp
 )
 
 target_compile_definitions(helios_integration_tests PRIVATE

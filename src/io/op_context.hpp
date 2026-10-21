@@ -16,7 +16,8 @@ enum class OpType : uint8_t {
     Connect,
     Timeout,
     Cancel,
-    Shutdown
+    Shutdown,
+    Poll
 };
 
 struct OpContext;

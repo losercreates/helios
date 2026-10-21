@@ -71,6 +71,11 @@ struct WorkerMetrics {
     std::atomic<uint64_t> rate_limit_rejected_total{0};
     std::atomic<uint64_t> slowloris_rejected_total{0};
 
+    // 7. Memory & Resource Footprint
+    std::atomic<uint64_t> buffer_pool_bytes_allocated{0};
+    std::atomic<uint64_t> buffer_pool_bytes_used{0};
+    std::atomic<uint64_t> backend_pool_idle_connections{0};
+
     explicit WorkerMetrics(uint32_t id, std::vector<uint64_t> latency_buckets = {50, 100, 300})
         : worker_id(id), latency_histogram(std::move(latency_buckets)) {}
 

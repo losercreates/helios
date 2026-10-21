@@ -1,4 +1,5 @@
 #include "metrics_collector.hpp"
+#include "metrics/system_memory.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -226,6 +227,43 @@ std::string MetricsCollector::RenderPrometheusText() const {
     for (const auto& w : snapshot) {
         ss << "helios_slowloris_rejected_total{worker=\"" << w->worker_id << "\"} "
            << w->slowloris_rejected_total.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 16. helios_process_resident_memory_bytes & helios_process_virtual_memory_bytes
+    ProcessMemoryInfo mem = QueryProcessMemory();
+    ss << "# HELP helios_process_resident_memory_bytes Resident memory size of the Helios process in bytes\n";
+    ss << "# TYPE helios_process_resident_memory_bytes gauge\n";
+    ss << "helios_process_resident_memory_bytes " << mem.resident_bytes << "\n\n";
+
+    ss << "# HELP helios_process_virtual_memory_bytes Virtual memory size of the Helios process in bytes\n";
+    ss << "# TYPE helios_process_virtual_memory_bytes gauge\n";
+    ss << "helios_process_virtual_memory_bytes " << mem.virtual_bytes << "\n\n";
+
+    // 17. helios_buffer_pool_bytes_allocated
+    ss << "# HELP helios_buffer_pool_bytes_allocated Total bytes allocated for connection buffer pools\n";
+    ss << "# TYPE helios_buffer_pool_bytes_allocated gauge\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_buffer_pool_bytes_allocated{worker=\"" << w->worker_id << "\"} "
+           << w->buffer_pool_bytes_allocated.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 18. helios_buffer_pool_bytes_used
+    ss << "# HELP helios_buffer_pool_bytes_used Total bytes currently used by active connection buffers\n";
+    ss << "# TYPE helios_buffer_pool_bytes_used gauge\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_buffer_pool_bytes_used{worker=\"" << w->worker_id << "\"} "
+           << w->buffer_pool_bytes_used.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 19. helios_connection_pool_idle_connections
+    ss << "# HELP helios_connection_pool_idle_connections Total idle backend connections currently pooled\n";
+    ss << "# TYPE helios_connection_pool_idle_connections gauge\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_connection_pool_idle_connections{worker=\"" << w->worker_id << "\"} "
+           << w->backend_pool_idle_connections.load(std::memory_order_relaxed) << "\n";
     }
 
     return ss.str();

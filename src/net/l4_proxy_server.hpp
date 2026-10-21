@@ -27,6 +27,8 @@
 #include <chrono>
 #include <string>
 
+#include "net/connection_slab_pool.hpp"
+
 namespace helios {
 
 enum class ProxyOpRole : uint8_t {
@@ -36,7 +38,8 @@ enum class ProxyOpRole : uint8_t {
     BackendWrite,
     BackendRead,
     ClientWrite,
-    Cancel
+    Cancel,
+    ClientPoll
 };
 
 struct ProxyOpContext : public OpContext {
@@ -65,6 +68,7 @@ public:
         std::string default_pool{};
         std::chrono::milliseconds header_read_timeout{5000};
         SecurityConfig security{};
+        bool enable_lazy_buffer_allocation{true};
     };
 
     struct NamedPool {
@@ -136,6 +140,13 @@ public:
     void SetRateLimiter(std::shared_ptr<RateLimiter> limiter) noexcept { rate_limiter_ = std::move(limiter); }
     [[nodiscard]] std::shared_ptr<RateLimiter> GetRateLimiter() const noexcept { return rate_limiter_; }
 
+    [[nodiscard]] const BufferPool& GetBufferPool() const noexcept { return buffer_pool_; }
+
+private:
+    struct ConnectionStateData;
+public:
+    [[nodiscard]] const ConnectionSlabPool<ConnectionStateData>& GetSlabPool() const noexcept { return slab_pool_; }
+
 private:
 
     struct ConnectionStateData {
@@ -146,11 +157,13 @@ private:
         ProxyOpContext backend_write_ctx;
         ProxyOpContext connect_ctx;
         ProxyOpContext cancel_backend_read_ctx;
+        ProxyOpContext client_poll_ctx;
 
         sockaddr_in backend_addr{};
 
         bool client_read_active{false};
         bool backend_read_active{false};
+        bool client_poll_active{false};
 
         bool client_read_paused{false};
         bool backend_read_paused{false};
@@ -213,8 +226,10 @@ private:
     void HandleBackendWriteCompletion(ConnectionStateData& data, const CompletionEvent& event);
     void HandleBackendReadCompletion(ConnectionStateData& data, const CompletionEvent& event);
     void HandleClientWriteCompletion(ConnectionStateData& data, const CompletionEvent& event);
+    void HandleClientPollCompletion(ConnectionStateData& data, const CompletionEvent& event);
 
     void TryStartClientRead(ConnectionStateData& data);
+    void TryStartClientPoll(ConnectionStateData& data);
     void TryStartBackendRead(ConnectionStateData& data);
     void SetClientReadPaused(ConnectionStateData& data, bool paused);
     void SetBackendReadPaused(ConnectionStateData& data, bool paused);
@@ -244,7 +259,8 @@ private:
     sockaddr_in accept_client_addr_{};
     socklen_t accept_client_addr_len_{sizeof(sockaddr_in)};
 
-    std::unordered_map<uint64_t, std::unique_ptr<ConnectionStateData>> connections_;
+    std::unordered_map<uint64_t, ConnectionStateData*> connections_;
+    ConnectionSlabPool<ConnectionStateData> slab_pool_;
     std::unordered_set<uint64_t> paused_connections_;
     std::chrono::steady_clock::time_point last_timeout_check_{std::chrono::steady_clock::now()};
     std::chrono::milliseconds timeout_check_interval_{250};

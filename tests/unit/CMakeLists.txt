@@ -21,6 +21,8 @@ add_executable(helios_unit_tests
     test_http_rewriter.cpp
     test_security_acl.cpp
     test_security_rate_limiter.cpp
+    test_system_memory.cpp
+    test_connection_slab_pool.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE

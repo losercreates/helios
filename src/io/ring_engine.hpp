@@ -38,6 +38,7 @@ public:
     bool PrepConnect(int fd, const sockaddr* addr, socklen_t addrlen, OpContext* ctx);
     bool PrepTimeout(struct __kernel_timespec* ts, OpContext* ctx);
     bool PrepCancel(OpContext* target_ctx, OpContext* cancel_ctx);
+    bool PrepPoll(int fd, uint32_t poll_mask, OpContext* ctx);
 
     // Queue Submission
     int Submit();

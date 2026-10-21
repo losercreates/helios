@@ -136,6 +136,16 @@ bool RingEngine::PrepCancel(OpContext* target_ctx, OpContext* cancel_ctx) {
     return true;
 }
 
+bool RingEngine::PrepPoll(int fd, uint32_t poll_mask, OpContext* ctx) {
+    struct io_uring_sqe* sqe = GetSqeOrNull();
+    if (!sqe) return false;
+    io_uring_prep_poll_add(sqe, fd, poll_mask);
+    ctx->type = OpType::Poll;
+    ctx->fd = fd;
+    TagSqe(sqe, ctx);
+    return true;
+}
+
 int RingEngine::Submit() {
     if (!initialized_) return -1;
     int ret = io_uring_submit(&ring_);
