@@ -10,6 +10,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     cmake \
     ninja-build \
     liburing-dev \
+    libssl-dev \
+    pkg-config \
     ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
@@ -39,6 +41,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     liburing2 \
+    libssl3 \
     ca-certificates \
     libcap2-bin \
  && rm -rf /var/lib/apt/lists/*

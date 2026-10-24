@@ -28,6 +28,8 @@
 #include <string>
 
 #include "net/connection_slab_pool.hpp"
+#include "tls/tls_context.hpp"
+#include "tls/tls_stream.hpp"
 
 namespace helios {
 
@@ -69,6 +71,8 @@ public:
         std::chrono::milliseconds header_read_timeout{5000};
         SecurityConfig security{};
         bool enable_lazy_buffer_allocation{true};
+        bool enable_tls{false};
+        TlsConfig tls_config{};
     };
 
     struct NamedPool {
@@ -140,6 +144,9 @@ public:
     void SetRateLimiter(std::shared_ptr<RateLimiter> limiter) noexcept { rate_limiter_ = std::move(limiter); }
     [[nodiscard]] std::shared_ptr<RateLimiter> GetRateLimiter() const noexcept { return rate_limiter_; }
 
+    void SetTlsContext(std::shared_ptr<TlsContext> tls_context) noexcept { tls_context_ = std::move(tls_context); }
+    [[nodiscard]] std::shared_ptr<TlsContext> GetTlsContext() const noexcept { return tls_context_; }
+
     [[nodiscard]] const BufferPool& GetBufferPool() const noexcept { return buffer_pool_; }
 
 private:
@@ -191,9 +198,15 @@ private:
         bool parsed_request{false};
         bool parsed_response{false};
 
+        std::unique_ptr<TlsStream> tls_stream;
+        bool tls_handshaking{false};
+
         ~ConnectionStateData() {
             if (backend) {
                 backend->DecrementActiveConnections();
+            }
+            if (tls_stream && metrics) {
+                metrics->tls_active_connections.fetch_sub(1, std::memory_order_relaxed);
             }
             auto now = std::chrono::steady_clock::now();
             auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time);
@@ -236,6 +249,7 @@ private:
     void ResumePausedReads();
     void CheckTimeouts(std::chrono::steady_clock::time_point now);
     void CheckTimeouts();
+    void SendDirectClientResponse(ConnectionStateData& data, std::string_view response);
 
     std::shared_ptr<Backend> SelectBackendFromPool(const std::string& pool_name);
     BackendConnectionPool* GetPoolForName(const std::string& pool_name) noexcept;
@@ -272,6 +286,7 @@ private:
     std::unordered_map<std::string, NamedPool> named_pools_;
     std::shared_ptr<IpAcl> acl_;
     std::shared_ptr<RateLimiter> rate_limiter_;
+    std::shared_ptr<TlsContext> tls_context_;
 };
 
 } // namespace helios

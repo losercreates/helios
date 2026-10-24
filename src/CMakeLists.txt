@@ -29,6 +29,8 @@ add_library(helios_lib STATIC
     security/acl.cpp
     security/rate_limiter.cpp
     metrics/system_memory.cpp
+    tls/tls_context.cpp
+    tls/tls_stream.cpp
 )
 
 target_include_directories(helios_lib PUBLIC
@@ -44,12 +46,15 @@ target_include_directories(helios_lib PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/logging
     ${CMAKE_CURRENT_SOURCE_DIR}/routing
     ${CMAKE_CURRENT_SOURCE_DIR}/security
+    ${CMAKE_CURRENT_SOURCE_DIR}/tls
 )
 
 target_link_libraries(helios_lib PUBLIC
     helios_compiler_flags
     helios_sanitizers
     uring
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 add_executable(helios
@@ -60,4 +65,6 @@ target_link_libraries(helios PRIVATE
     helios_lib
     helios_compiler_flags
     helios_sanitizers
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )

@@ -23,6 +23,8 @@ add_executable(helios_unit_tests
     test_security_rate_limiter.cpp
     test_system_memory.cpp
     test_connection_slab_pool.cpp
+    test_tls_context.cpp
+    test_tls_stream.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
@@ -33,6 +35,8 @@ target_link_libraries(helios_unit_tests PRIVATE
     gtest
     gtest_main
     uring
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 target_compile_definitions(helios_unit_tests PRIVATE

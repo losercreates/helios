@@ -76,6 +76,11 @@ struct WorkerMetrics {
     std::atomic<uint64_t> buffer_pool_bytes_used{0};
     std::atomic<uint64_t> backend_pool_idle_connections{0};
 
+    // 8. TLS / HTTPS Metrics
+    std::atomic<uint64_t> tls_handshakes_total{0};
+    std::atomic<uint64_t> tls_handshake_errors_total{0};
+    std::atomic<int64_t> tls_active_connections{0};
+
     explicit WorkerMetrics(uint32_t id, std::vector<uint64_t> latency_buckets = {50, 100, 300})
         : worker_id(id), latency_histogram(std::move(latency_buckets)) {}
 

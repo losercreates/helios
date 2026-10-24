@@ -91,6 +91,10 @@ if(HELIOS_BUILD_TESTS)
     enable_testing()
 endif()
 
+# OpenSSL Dependency
+find_package(OpenSSL REQUIRED)
+message(STATUS "OpenSSL found: ${OPENSSL_VERSION} (include: ${OPENSSL_INCLUDE_DIR})")
+
 # External Dependencies via FetchContent
 include(FetchContent)
 

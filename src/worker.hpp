@@ -1,6 +1,7 @@
 #pragma once
 
 #include "net/l4_proxy_server.hpp"
+#include "tls/tls_context.hpp"
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -34,6 +35,7 @@ struct WorkerPoolConfig {
     BackendConnectionPoolConfig connection_pool_config{};
     std::chrono::milliseconds header_read_timeout{5000};
     SecurityConfig security{};
+    TlsConfig tls{};
 };
 
 // Represents an isolated, thread-per-core Worker running on a dedicated CPU core.
@@ -120,6 +122,8 @@ public:
     [[nodiscard]] std::shared_ptr<IpAcl> GetAcl() const noexcept { return acl_; }
     void SetRateLimiter(std::shared_ptr<RateLimiter> limiter);
     [[nodiscard]] std::shared_ptr<RateLimiter> GetRateLimiter() const noexcept { return rate_limiter_; }
+    void SetTlsContext(std::shared_ptr<TlsContext> ctx);
+    [[nodiscard]] std::shared_ptr<TlsContext> GetTlsContext() const noexcept { return tls_context_; }
     void ReloadSecurity(const SecurityConfig& security);
 
     bool Start();
@@ -145,6 +149,7 @@ private:
     std::shared_ptr<MetricsCollector> metrics_collector_;
     std::shared_ptr<IpAcl> acl_;
     std::shared_ptr<RateLimiter> rate_limiter_;
+    std::shared_ptr<TlsContext> tls_context_;
     std::atomic<bool> running_{false};
 };
 

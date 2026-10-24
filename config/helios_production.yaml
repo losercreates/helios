@@ -42,3 +42,12 @@ logging:
   queue_capacity: 131072
   flush_interval_ms: 100
 
+tls:
+  enabled: false
+  cert_file: "/etc/ssl/certs/helios.crt"
+  key_file: "/etc/ssl/private/helios.key"
+  min_version: "TLSv1.2"
+  cipher_suites: "ECDHE-ECDSA-AES128-GCM-SHA256:ECDHE-RSA-AES128-GCM-SHA256:ECDHE-ECDSA-AES256-GCM-SHA384:ECDHE-RSA-AES256-GCM-SHA384"
+  alpn:
+    - "http/1.1"
+

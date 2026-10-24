@@ -308,6 +308,7 @@ WorkerPoolConfig HeliosConfig::ToWorkerPoolConfig() const {
     wcfg.drain_timeout = timeouts.drain_timeout;
     wcfg.header_read_timeout = timeouts.header_read_timeout;
     wcfg.security = security;
+    wcfg.tls = tls;
     if (!backend_pools.empty()) {
         wcfg.lb_algorithm = backend_pools[0].algorithm;
         wcfg.enable_connection_pooling = backend_pools[0].enable_connection_pool;
@@ -572,6 +573,39 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
         }
     }
 
+    // TLS / HTTPS Termination configuration
+    if (const auto* tls_node = root.Find("tls")) {
+        if (const auto* en = tls_node->Find("enabled")) {
+            config.tls.enabled = en->AsBool(false);
+        }
+        if (const auto* port = tls_node->Find("port")) {
+            config.tls.port = static_cast<uint16_t>(port->AsUInt(8443));
+        }
+        if (const auto* cert = tls_node->Find("cert_file")) {
+            config.tls.cert_file = StripQuotes(cert->AsString());
+        }
+        if (const auto* key = tls_node->Find("key_file")) {
+            config.tls.key_file = StripQuotes(key->AsString());
+        }
+        if (const auto* ver = tls_node->Find("min_version")) {
+            config.tls.min_version = StripQuotes(ver->AsString("TLSv1.2"));
+        }
+        if (const auto* ciphers = tls_node->Find("ciphers")) {
+            config.tls.ciphers = StripQuotes(ciphers->AsString());
+        }
+        if (const auto* ciphersuites = tls_node->Find("ciphersuites")) {
+            config.tls.ciphersuites = StripQuotes(ciphersuites->AsString());
+        }
+        if (const auto* alpn_node = tls_node->Find("alpn")) {
+            if (alpn_node->IsSequence()) {
+                config.tls.alpn_protocols.clear();
+                for (const auto& a_node : alpn_node->sequence) {
+                    config.tls.alpn_protocols.push_back(StripQuotes(a_node.AsString()));
+                }
+            }
+        }
+    }
+
     return true;
 }
 
@@ -738,6 +772,21 @@ bool ConfigLoader::Validate(const HeliosConfig& config, std::string& error_messa
         }
         if (config.security.rate_limit.cidr_mask > 32) {
             error_message = "security.rate_limit.cidr_mask must be <= 32";
+            return false;
+        }
+    }
+
+    if (config.tls.enabled) {
+        if (config.tls.cert_file.empty()) {
+            error_message = "tls.cert_file must not be empty when tls is enabled";
+            return false;
+        }
+        if (config.tls.key_file.empty()) {
+            error_message = "tls.key_file must not be empty when tls is enabled";
+            return false;
+        }
+        if (config.tls.min_version != "TLSv1.2" && config.tls.min_version != "TLSv1.3") {
+            error_message = "tls.min_version must be either 'TLSv1.2' or 'TLSv1.3' (got '" + config.tls.min_version + "')";
             return false;
         }
     }

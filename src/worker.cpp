@@ -295,6 +295,13 @@ void WorkerPool::SetRateLimiter(std::shared_ptr<RateLimiter> limiter) {
     }
 }
 
+void WorkerPool::SetTlsContext(std::shared_ptr<TlsContext> ctx) {
+    tls_context_ = std::move(ctx);
+    for (auto& w : workers_) {
+        w->GetProxy().SetTlsContext(tls_context_);
+    }
+}
+
 void WorkerPool::ReloadSecurity(const SecurityConfig& security) {
     config_.security = security;
     if (security.acl.enabled) {
@@ -352,6 +359,14 @@ bool WorkerPool::Start() {
         rate_limiter_ = std::make_shared<RateLimiter>(config_.security.rate_limit);
     }
 
+    if (config_.tls.enabled && !tls_context_) {
+        tls_context_ = std::make_shared<TlsContext>(config_.tls);
+        std::string err;
+        if (!tls_context_->Initialize(&err)) {
+            return false;
+        }
+    }
+
     uint16_t target_port = config_.listen_port;
 
     for (size_t i = 0; i < count; ++i) {
@@ -369,6 +384,9 @@ bool WorkerPool::Start() {
         wcfg.proxy_config.enable_connection_pooling = config_.enable_connection_pooling;
         wcfg.proxy_config.connection_pool_config = config_.connection_pool_config;
         wcfg.proxy_config.header_read_timeout = config_.header_read_timeout;
+        wcfg.proxy_config.enable_tls = config_.tls.enabled;
+        wcfg.proxy_config.enable_l7_routing = config_.tls.enabled;
+        wcfg.proxy_config.tls_config = config_.tls;
 
         auto worker = std::make_unique<Worker>(wcfg.worker_id, wcfg.core_id, std::move(wcfg));
         if (access_logger_) {
@@ -383,8 +401,14 @@ bool WorkerPool::Start() {
         if (rate_limiter_) {
             worker->GetProxy().SetRateLimiter(rate_limiter_);
         }
+        if (tls_context_) {
+            worker->GetProxy().SetTlsContext(tls_context_);
+        }
         for (const auto& [host, port, weight] : initial_backends_) {
             worker->AddBackend(host, port, weight);
+        }
+        if (config_.tls.enabled && worker->GetProxy().GetRouter().GetDefaultPool().empty()) {
+            worker->GetProxy().SetDefaultPool("default");
         }
 
         if (i == 0) {

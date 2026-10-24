@@ -57,6 +57,11 @@ struct Buffer {
         write_offset = std::min(write_offset + bytes, capacity);
     }
 
+    void Clear() noexcept {
+        read_offset = 0;
+        write_offset = 0;
+    }
+
     void Reset() noexcept {
         read_offset = 0;
         write_offset = 0;

@@ -102,6 +102,8 @@ struct LoggingConfig {
     std::chrono::milliseconds flush_interval{100};
 };
 
+#include "tls/tls_context.hpp"
+
 struct HeliosConfig {
     ServerConfig server;
     std::vector<BackendPoolConfig> backend_pools;
@@ -112,6 +114,7 @@ struct HeliosConfig {
     MetricsConfig metrics;
     LoggingConfig logging;
     SecurityConfig security;
+    TlsConfig tls;
 
     [[nodiscard]] WorkerPoolConfig ToWorkerPoolConfig() const;
     [[nodiscard]] PrometheusServer::Config ToPrometheusConfig() const;

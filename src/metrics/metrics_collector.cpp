@@ -265,6 +265,33 @@ std::string MetricsCollector::RenderPrometheusText() const {
         ss << "helios_connection_pool_idle_connections{worker=\"" << w->worker_id << "\"} "
            << w->backend_pool_idle_connections.load(std::memory_order_relaxed) << "\n";
     }
+    ss << "\n";
+
+    // 20. helios_tls_handshakes_total
+    ss << "# HELP helios_tls_handshakes_total Total successful TLS handshakes completed\n";
+    ss << "# TYPE helios_tls_handshakes_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_tls_handshakes_total{worker=\"" << w->worker_id << "\"} "
+           << w->tls_handshakes_total.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 21. helios_tls_handshake_errors_total
+    ss << "# HELP helios_tls_handshake_errors_total Total TLS handshake failures or protocol errors\n";
+    ss << "# TYPE helios_tls_handshake_errors_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_tls_handshake_errors_total{worker=\"" << w->worker_id << "\"} "
+           << w->tls_handshake_errors_total.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 22. helios_tls_active_connections
+    ss << "# HELP helios_tls_active_connections Current active TLS client connections\n";
+    ss << "# TYPE helios_tls_active_connections gauge\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_tls_active_connections{worker=\"" << w->worker_id << "\"} "
+           << w->tls_active_connections.load(std::memory_order_relaxed) << "\n";
+    }
 
     return ss.str();
 }

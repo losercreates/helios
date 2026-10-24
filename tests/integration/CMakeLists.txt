@@ -11,6 +11,7 @@ add_executable(helios_integration_tests
     test_multi_worker.cpp
     test_security_integration.cpp
     test_memory_optimization_integration.cpp
+    test_tls_integration.cpp
 )
 
 target_compile_definitions(helios_integration_tests PRIVATE
@@ -24,6 +25,8 @@ target_link_libraries(helios_integration_tests PRIVATE
     gtest
     gtest_main
     uring
+    OpenSSL::SSL
+    OpenSSL::Crypto
 )
 
 add_dependencies(helios_integration_tests helios)

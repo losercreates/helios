@@ -148,6 +148,21 @@ void L4ProxyServer::DisableConnectionPooling() noexcept {
 bool L4ProxyServer::Start() {
     if (running_) return true;
 
+    if (config_.enable_tls) {
+        config_.enable_l7_routing = true;
+        if (!config_.default_pool.empty() && router_.GetDefaultPool().empty()) {
+            router_.SetDefaultPool(config_.default_pool);
+        }
+        if (!tls_context_) {
+            tls_context_ = std::make_shared<TlsContext>(config_.tls_config);
+            std::string tls_err;
+            if (!tls_context_->Initialize(&tls_err)) {
+                std::cerr << "[L4ProxyServer] TLS initialization failed: " << tls_err << "\n";
+                return false;
+            }
+        }
+    }
+
     if (!listener_.BindAndListen(config_.listen_host.c_str(), config_.listen_port, 128, config_.reuse_port)) {
         return false;
     }
@@ -395,6 +410,14 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
         data->conn = conn;
         data->l7_routed = false;
 
+        if (tls_context_ && tls_context_->IsInitialized()) {
+            data->tls_stream = tls_context_->CreateStream();
+            data->tls_handshaking = true;
+            if (metrics_) {
+                metrics_->tls_active_connections.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+
         char client_ip_buf[INET_ADDRSTRLEN] = "127.0.0.1";
         inet_ntop(AF_INET, &(accept_client_addr_.sin_addr), client_ip_buf, INET_ADDRSTRLEN);
         data->client_ip = client_ip_buf;
@@ -577,6 +600,15 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
             }
         }
         data.status_code = 502;
+        if (config_.enable_l7_routing) {
+            static constexpr std::string_view k502Response =
+                "HTTP/1.1 502 Bad Gateway\r\n"
+                "Content-Type: text/plain\r\n"
+                "Content-Length: 15\r\n"
+                "Connection: close\r\n\r\n"
+                "502 Bad Gateway";
+            SendDirectClientResponse(data, k502Response);
+        }
         conn->InitiateClose("Backend connect failed");
         conn->DecrementPendingCqe();
         return;
@@ -719,9 +751,90 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                 if (metrics_) {
                     metrics_->bytes_read_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
                 }
-                data.raw_request_accumulated.append(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
-                buffer_pool_.Release(buf);
-                buf = nullptr;
+                if (data.tls_stream) {
+                    if (data.tls_handshaking) {
+                        std::vector<uint8_t> handshake_resp;
+                        std::span<const uint8_t> in_cipher(buf->data, static_cast<size_t>(event.result));
+                        auto status = data.tls_stream->Handshake(in_cipher, handshake_resp);
+                        buffer_pool_.Release(buf);
+                        buf = nullptr;
+
+                        if (!handshake_resp.empty()) {
+                            size_t total_sent = 0;
+                            while (total_sent < handshake_resp.size()) {
+                                ssize_t sent = ::send(conn->GetClientFd(),
+                                                      handshake_resp.data() + total_sent,
+                                                      handshake_resp.size() - total_sent,
+                                                      MSG_NOSIGNAL);
+                                if (sent > 0) {
+                                    total_sent += static_cast<size_t>(sent);
+                                } else if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                                    continue;
+                                } else {
+                                    break;
+                                }
+                            }
+                        }
+
+                        if (status == TlsHandshakeStatus::Failed) {
+                            if (metrics_) {
+                                metrics_->tls_handshake_errors_total.fetch_add(1, std::memory_order_relaxed);
+                            }
+                            conn->InitiateClose("TLS handshake failed");
+                            conn->DecrementPendingCqe();
+                            return;
+                        }
+
+                        if (status == TlsHandshakeStatus::InProgress) {
+                            TryStartClientRead(data);
+                            engine_.Submit();
+                            conn->DecrementPendingCqe();
+                            return;
+                        }
+
+                        // Handshake is Complete
+                        data.tls_handshaking = false;
+                        if (metrics_) {
+                            metrics_->tls_handshakes_total.fetch_add(1, std::memory_order_relaxed);
+                        }
+
+                        // Decrypt any pipelined application bytes from BIO
+                        auto dec_res = data.tls_stream->Decrypt({}, data.raw_request_accumulated);
+                        if (dec_res.error) {
+                            conn->InitiateClose("TLS decrypt error");
+                            conn->DecrementPendingCqe();
+                            return;
+                        }
+
+                        if (data.raw_request_accumulated.empty()) {
+                            TryStartClientRead(data);
+                            engine_.Submit();
+                            conn->DecrementPendingCqe();
+                            return;
+                        }
+                    } else {
+                        // Established TLS: Decrypt incoming application data
+                        std::span<const uint8_t> in_cipher(buf->data, static_cast<size_t>(event.result));
+                        auto dec_res = data.tls_stream->Decrypt(in_cipher, data.raw_request_accumulated);
+                        buffer_pool_.Release(buf);
+                        buf = nullptr;
+
+                        if (dec_res.error) {
+                            conn->InitiateClose("TLS decrypt error");
+                            conn->DecrementPendingCqe();
+                            return;
+                        }
+                        if (dec_res.peer_closed) {
+                            conn->HandleClientFin();
+                            conn->DecrementPendingCqe();
+                            return;
+                        }
+                    }
+                } else {
+                    data.raw_request_accumulated.append(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
+                    buffer_pool_.Release(buf);
+                    buf = nullptr;
+                }
 
                 data.parser.Reset();
                 ParseResult parse_res = data.parser.Parse(data.raw_request_accumulated);
@@ -733,7 +846,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                         "Content-Length: 15\r\n"
                         "Connection: close\r\n\r\n"
                         "400 Bad Request";
-                    ::send(conn->GetClientFd(), k400Response.data(), k400Response.size(), MSG_NOSIGNAL);
+                    SendDirectClientResponse(data, k400Response);
                     data.status_code = 400;
                     conn->InitiateClose("HTTP Bad Request");
                     conn->DecrementPendingCqe();
@@ -759,7 +872,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                     if (metrics_) {
                         metrics_->rate_limit_rejected_total.fetch_add(1, std::memory_order_relaxed);
                     }
-                    ::send(conn->GetClientFd(), k429Response.data(), k429Response.size(), MSG_NOSIGNAL);
+                    SendDirectClientResponse(data, k429Response);
                     data.status_code = 429;
                     conn->InitiateClose("HTTP Rate Limit Exceeded");
                     conn->DecrementPendingCqe();
@@ -784,7 +897,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                         "Content-Length: 13\r\n"
                         "Connection: close\r\n\r\n"
                         "404 Not Found";
-                    ::send(conn->GetClientFd(), k404Response.data(), k404Response.size(), MSG_NOSIGNAL);
+                    SendDirectClientResponse(data, k404Response);
                     data.status_code = 404;
                     conn->InitiateClose("HTTP Route Not Found");
                     conn->DecrementPendingCqe();
@@ -800,7 +913,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
 
                 HeaderInjectionOptions inj_opts;
                 inj_opts.client_ip = data.client_ip;
-                inj_opts.client_proto = "http";
+                inj_opts.client_proto = data.tls_stream ? "https" : "http";
                 inj_opts.host = std::string(host);
                 if (match_opt->strip_prefix) {
                     inj_opts.rewritten_path = match_opt->rewritten_path;
@@ -821,7 +934,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                         "Content-Length: 23\r\n"
                         "Connection: close\r\n\r\n"
                         "503 Service Unavailable";
-                    ::send(conn->GetClientFd(), k503Response.data(), k503Response.size(), MSG_NOSIGNAL);
+                    SendDirectClientResponse(data, k503Response);
                     data.status_code = 503;
                     conn->InitiateClose("No backend available in pool");
                     conn->DecrementPendingCqe();
@@ -839,7 +952,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                         "Content-Length: 23\r\n"
                         "Connection: close\r\n\r\n"
                         "503 Service Unavailable";
-                    ::send(conn->GetClientFd(), k503Response.data(), k503Response.size(), MSG_NOSIGNAL);
+                    SendDirectClientResponse(data, k503Response);
                     data.status_code = 503;
                     conn->InitiateClose("Circuit breaker open");
                     conn->DecrementPendingCqe();
@@ -872,7 +985,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                             "HTTP/1.1 500 Internal Server Error\r\n"
                             "Content-Length: 0\r\n"
                             "Connection: close\r\n\r\n";
-                        ::send(conn->GetClientFd(), k500Response.data(), k500Response.size(), MSG_NOSIGNAL);
+                        SendDirectClientResponse(data, k500Response);
                         data.status_code = 500;
                         conn->InitiateClose("Failed to create backend socket");
                         conn->DecrementPendingCqe();
@@ -950,27 +1063,49 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
             if (metrics_) {
                 metrics_->bytes_read_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
             }
-            if (!data.parsed_request) {
-                data.parsed_request = true;
-                std::string_view req(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
-                auto line_end = req.find("\r\n");
-                if (line_end != std::string_view::npos) {
-                    std::string_view line = req.substr(0, line_end);
-                    auto sp1 = line.find(' ');
-                    if (sp1 != std::string_view::npos) {
-                        data.method = std::string(line.substr(0, sp1));
-                        auto sp2 = line.find(' ', sp1 + 1);
-                        if (sp2 != std::string_view::npos) {
-                            data.uri = std::string(line.substr(sp1 + 1, sp2 - sp1 - 1));
-                            data.http_version = std::string(line.substr(sp2 + 1));
-                        } else {
-                            data.uri = std::string(line.substr(sp1 + 1));
+            if (data.tls_stream) {
+                std::string plain;
+                std::span<const uint8_t> in_cipher(buf->data, static_cast<size_t>(event.result));
+                auto dec_res = data.tls_stream->Decrypt(in_cipher, plain);
+                if (dec_res.error) {
+                    buffer_pool_.Release(buf);
+                    conn->InitiateClose("TLS decrypt error");
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+                if (dec_res.peer_closed) {
+                    buffer_pool_.Release(buf);
+                    conn->HandleClientFin();
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+                buf->Clear();
+                size_t to_copy = std::min(buf->capacity, plain.size());
+                std::memcpy(buf->data, plain.data(), to_copy);
+                buf->AdvanceWrite(to_copy);
+            } else {
+                if (!data.parsed_request) {
+                    data.parsed_request = true;
+                    std::string_view req(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
+                    auto line_end = req.find("\r\n");
+                    if (line_end != std::string_view::npos) {
+                        std::string_view line = req.substr(0, line_end);
+                        auto sp1 = line.find(' ');
+                        if (sp1 != std::string_view::npos) {
+                            data.method = std::string(line.substr(0, sp1));
+                            auto sp2 = line.find(' ', sp1 + 1);
+                            if (sp2 != std::string_view::npos) {
+                                data.uri = std::string(line.substr(sp1 + 1, sp2 - sp1 - 1));
+                                data.http_version = std::string(line.substr(sp2 + 1));
+                            } else {
+                                data.uri = std::string(line.substr(sp1 + 1));
+                            }
                         }
                     }
                 }
+                buf->AdvanceWrite(static_cast<size_t>(event.result));
             }
 
-            buf->AdvanceWrite(static_cast<size_t>(event.result));
             data.backend_write_ctx.buf = buf;
             conn->SetBackendReusable(false);
             engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);
@@ -1078,7 +1213,8 @@ void L4ProxyServer::TryStartBackendRead(ConnectionStateData& data) {
     data.backend_read_ctx.buf = buf;
     data.backend_read_active = true;
 
-    engine_.PrepRead(data.conn->GetBackendFd(), buf->data, buf->capacity, 0, &data.backend_read_ctx);
+    size_t read_cap = data.tls_stream ? std::min(buf->capacity, size_t(14000)) : buf->capacity;
+    engine_.PrepRead(data.conn->GetBackendFd(), buf->data, read_cap, 0, &data.backend_read_ctx);
     data.conn->IncrementPendingCqe();
 }
 
@@ -1114,7 +1250,24 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
                 }
             }
 
-            buf->AdvanceWrite(static_cast<size_t>(event.result));
+            if (data.tls_stream) {
+                std::vector<uint8_t> cipher;
+                std::span<const uint8_t> plain(buf->data, static_cast<size_t>(event.result));
+                auto enc_res = data.tls_stream->Encrypt(plain, cipher);
+                if (enc_res.error) {
+                    buffer_pool_.Release(buf);
+                    conn->InitiateClose("TLS encrypt error");
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+                buf->Clear();
+                size_t to_write = std::min(buf->capacity, cipher.size());
+                std::memcpy(buf->data, cipher.data(), to_write);
+                buf->AdvanceWrite(to_write);
+            } else {
+                buf->AdvanceWrite(static_cast<size_t>(event.result));
+            }
+
             data.client_write_ctx.buf = buf;
             engine_.PrepWrite(conn->GetClientFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.client_write_ctx);
             conn->IncrementPendingCqe();
@@ -1253,7 +1406,7 @@ void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
                 if (metrics_) {
                     metrics_->slowloris_rejected_total.fetch_add(1, std::memory_order_relaxed);
                 }
-                ::send(data->conn->GetClientFd(), k408Response.data(), k408Response.size(), MSG_NOSIGNAL);
+                SendDirectClientResponse(*data, k408Response);
                 data->status_code = 408;
                 data->conn->InitiateClose("HTTP Header Read Timeout (Slowloris)");
                 continue;
@@ -1267,6 +1420,37 @@ void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
 
 void L4ProxyServer::CheckTimeouts() {
     CheckTimeouts(std::chrono::steady_clock::now());
+}
+
+void L4ProxyServer::SendDirectClientResponse(ConnectionStateData& data, std::string_view response) {
+    if (!data.conn) return;
+    int client_fd = data.conn->GetClientFd();
+    if (client_fd < 0) return;
+
+    if (data.tls_stream && !data.tls_handshaking) {
+        std::vector<uint8_t> cipher;
+        std::span<const uint8_t> plain(reinterpret_cast<const uint8_t*>(response.data()), response.size());
+        auto enc_res = data.tls_stream->Encrypt(plain, cipher);
+        data.tls_stream->Shutdown(cipher);
+        if (!enc_res.error && !cipher.empty()) {
+            size_t total_sent = 0;
+            while (total_sent < cipher.size()) {
+                ssize_t sent = ::send(client_fd,
+                                      cipher.data() + total_sent,
+                                      cipher.size() - total_sent,
+                                      MSG_NOSIGNAL);
+                if (sent > 0) {
+                    total_sent += static_cast<size_t>(sent);
+                } else if (sent < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) {
+                    continue;
+                } else {
+                    break;
+                }
+            }
+        }
+    } else if (!data.tls_stream) {
+        ::send(client_fd, response.data(), response.size(), MSG_NOSIGNAL);
+    }
 }
 
 } // namespace helios
