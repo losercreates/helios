@@ -48,6 +48,9 @@ public:
     // Dynamic certificate and key reloading without restarting
     bool ReloadCertificates(const std::string& cert_file, const std::string& key_file, std::string* error_out = nullptr);
 
+    // Dynamic full TLS configuration and certificate reloading (atomic swap)
+    bool Reload(const TlsConfig& new_config, std::string* error_out = nullptr);
+
     [[nodiscard]] bool IsInitialized() const noexcept {
         std::lock_guard lock(mutex_);
         return ctx_ != nullptr;
@@ -58,7 +61,8 @@ public:
         return ctx_;
     }
 
-    [[nodiscard]] const TlsConfig& GetConfig() const noexcept {
+    [[nodiscard]] TlsConfig GetConfig() const noexcept {
+        std::lock_guard lock(mutex_);
         return config_;
     }
 
@@ -68,6 +72,12 @@ public:
 private:
     static int AlpnSelectCallback(SSL* ssl, const unsigned char** out, unsigned char* outlen,
                                   const unsigned char* in, unsigned int inlen, void* arg);
+
+    static SSL_CTX* CreateAndConfigureCtx(const TlsConfig& config,
+                                          const std::vector<unsigned char>& wire_alpn,
+                                          void* alpn_callback_arg,
+                                          std::string* error_out);
+    static std::vector<unsigned char> EncodeWireAlpn(const std::vector<std::string>& protocols);
 
     mutable std::mutex mutex_;
     TlsConfig config_;

@@ -31,17 +31,20 @@ int TlsContext::AlpnSelectCallback(SSL* /*ssl*/, const unsigned char** out, unsi
     return SSL_TLSEXT_ERR_OK;
 }
 
-TlsContext::TlsContext(TlsConfig config)
-    : config_(std::move(config)) {
-    // Encode ALPN protocols in wire format (length-prefixed strings)
-    wire_alpn_protocols_.clear();
-    for (const auto& proto : config_.alpn_protocols) {
+std::vector<unsigned char> TlsContext::EncodeWireAlpn(const std::vector<std::string>& protocols) {
+    std::vector<unsigned char> wire;
+    for (const auto& proto : protocols) {
         if (!proto.empty() && proto.size() <= 255) {
-            wire_alpn_protocols_.push_back(static_cast<unsigned char>(proto.size()));
-            wire_alpn_protocols_.insert(wire_alpn_protocols_.end(), proto.begin(), proto.end());
+            wire.push_back(static_cast<unsigned char>(proto.size()));
+            wire.insert(wire.end(), proto.begin(), proto.end());
         }
     }
+    return wire;
 }
+
+TlsContext::TlsContext(TlsConfig config)
+    : config_(std::move(config)),
+      wire_alpn_protocols_(EncodeWireAlpn(config_.alpn_protocols)) {}
 
 TlsContext::~TlsContext() {
     if (ctx_) {
@@ -72,105 +75,126 @@ TlsContext& TlsContext::operator=(TlsContext&& other) noexcept {
     return *this;
 }
 
-bool TlsContext::Initialize(std::string* error_out) {
-    std::lock_guard lock(mutex_);
-
-    if (ctx_) {
-        SSL_CTX_free(ctx_);
-        ctx_ = nullptr;
-    }
-
+SSL_CTX* TlsContext::CreateAndConfigureCtx(const TlsConfig& config,
+                                          const std::vector<unsigned char>& wire_alpn,
+                                          void* alpn_callback_arg,
+                                          std::string* error_out) {
     OPENSSL_init_ssl(OPENSSL_INIT_LOAD_SSL_STRINGS | OPENSSL_INIT_LOAD_CRYPTO_STRINGS, nullptr);
 
-    ctx_ = SSL_CTX_new(TLS_server_method());
-    if (!ctx_) {
+    SSL_CTX* new_ctx = SSL_CTX_new(TLS_server_method());
+    if (!new_ctx) {
         std::string err = "Failed to create SSL_CTX: " + GetLastOpenSslError();
         if (error_out) *error_out = err;
-        return false;
+        return nullptr;
     }
 
     // Protocol Version Constraints: Enforce TLS 1.2+ or TLS 1.3+
-    if (config_.min_version == "TLSv1.3") {
-        if (SSL_CTX_set_min_proto_version(ctx_, TLS1_3_VERSION) != 1) {
+    if (config.min_version == "TLSv1.3") {
+        if (SSL_CTX_set_min_proto_version(new_ctx, TLS1_3_VERSION) != 1) {
             std::string err = "Failed to set minimum TLS version to TLSv1.3: " + GetLastOpenSslError();
             if (error_out) *error_out = err;
-            SSL_CTX_free(ctx_);
-            ctx_ = nullptr;
-            return false;
+            SSL_CTX_free(new_ctx);
+            return nullptr;
         }
     } else {
-        if (SSL_CTX_set_min_proto_version(ctx_, TLS1_2_VERSION) != 1) {
+        if (SSL_CTX_set_min_proto_version(new_ctx, TLS1_2_VERSION) != 1) {
             std::string err = "Failed to set minimum TLS version to TLSv1.2: " + GetLastOpenSslError();
             if (error_out) *error_out = err;
-            SSL_CTX_free(ctx_);
-            ctx_ = nullptr;
-            return false;
+            SSL_CTX_free(new_ctx);
+            return nullptr;
         }
     }
 
     // Disable insecure and legacy protocols explicitly
     uint64_t options = SSL_OP_NO_SSLv2 | SSL_OP_NO_SSLv3 | SSL_OP_NO_TLSv1 | SSL_OP_NO_TLSv1_1;
     options |= SSL_OP_NO_COMPRESSION; // Mitigate CRIME attacks
-    if (config_.prefer_server_ciphers) {
+    if (config.prefer_server_ciphers) {
         options |= SSL_OP_CIPHER_SERVER_PREFERENCE;
     }
-    SSL_CTX_set_options(ctx_, static_cast<unsigned long>(options));
+    SSL_CTX_set_options(new_ctx, static_cast<unsigned long>(options));
 
     // Configure Cipher Suites
-    if (!config_.ciphers.empty()) {
-        if (SSL_CTX_set_cipher_list(ctx_, config_.ciphers.c_str()) != 1) {
-            std::string err = "Failed to set TLS cipher list '" + config_.ciphers + "': " + GetLastOpenSslError();
+    if (!config.ciphers.empty()) {
+        if (SSL_CTX_set_cipher_list(new_ctx, config.ciphers.c_str()) != 1) {
+            std::string err = "Failed to set TLS cipher list '" + config.ciphers + "': " + GetLastOpenSslError();
             if (error_out) *error_out = err;
-            SSL_CTX_free(ctx_);
-            ctx_ = nullptr;
-            return false;
+            SSL_CTX_free(new_ctx);
+            return nullptr;
         }
     }
 
-    if (!config_.ciphersuites.empty()) {
-        if (SSL_CTX_set_ciphersuites(ctx_, config_.ciphersuites.c_str()) != 1) {
-            std::string err = "Failed to set TLSv1.3 ciphersuites '" + config_.ciphersuites + "': " + GetLastOpenSslError();
+    if (!config.ciphersuites.empty()) {
+        if (SSL_CTX_set_ciphersuites(new_ctx, config.ciphersuites.c_str()) != 1) {
+            std::string err = "Failed to set TLSv1.3 ciphersuites '" + config.ciphersuites + "': " + GetLastOpenSslError();
             if (error_out) *error_out = err;
-            SSL_CTX_free(ctx_);
-            ctx_ = nullptr;
-            return false;
+            SSL_CTX_free(new_ctx);
+            return nullptr;
         }
     }
 
     // Configure ALPN negotiation
-    if (!wire_alpn_protocols_.empty()) {
-        SSL_CTX_set_alpn_select_cb(ctx_, AlpnSelectCallback, this);
+    if (!wire_alpn.empty()) {
+        SSL_CTX_set_alpn_select_cb(new_ctx, AlpnSelectCallback, alpn_callback_arg);
     }
 
     // Load Certificate Chain and Private Key
-    if (!config_.cert_file.empty()) {
-        if (SSL_CTX_use_certificate_chain_file(ctx_, config_.cert_file.c_str()) != 1) {
-            std::string err = "Failed to load certificate file '" + config_.cert_file + "': " + GetLastOpenSslError();
+    if (!config.cert_file.empty()) {
+        if (SSL_CTX_use_certificate_chain_file(new_ctx, config.cert_file.c_str()) != 1) {
+            std::string err = "Failed to load certificate file '" + config.cert_file + "': " + GetLastOpenSslError();
             if (error_out) *error_out = err;
-            SSL_CTX_free(ctx_);
-            ctx_ = nullptr;
-            return false;
+            SSL_CTX_free(new_ctx);
+            return nullptr;
         }
     }
 
-    if (!config_.key_file.empty()) {
-        if (SSL_CTX_use_PrivateKey_file(ctx_, config_.key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
-            std::string err = "Failed to load private key file '" + config_.key_file + "': " + GetLastOpenSslError();
+    if (!config.key_file.empty()) {
+        if (SSL_CTX_use_PrivateKey_file(new_ctx, config.key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
+            std::string err = "Failed to load private key file '" + config.key_file + "': " + GetLastOpenSslError();
             if (error_out) *error_out = err;
-            SSL_CTX_free(ctx_);
-            ctx_ = nullptr;
-            return false;
+            SSL_CTX_free(new_ctx);
+            return nullptr;
         }
 
-        if (SSL_CTX_check_private_key(ctx_) != 1) {
+        if (SSL_CTX_check_private_key(new_ctx) != 1) {
             std::string err = "Private key does not match public certificate: " + GetLastOpenSslError();
             if (error_out) *error_out = err;
-            SSL_CTX_free(ctx_);
-            ctx_ = nullptr;
-            return false;
+            SSL_CTX_free(new_ctx);
+            return nullptr;
         }
     }
 
+    return new_ctx;
+}
+
+bool TlsContext::Initialize(std::string* error_out) {
+    std::lock_guard lock(mutex_);
+    SSL_CTX* new_ctx = CreateAndConfigureCtx(config_, wire_alpn_protocols_, this, error_out);
+    if (!new_ctx) {
+        return false;
+    }
+    if (ctx_) {
+        SSL_CTX_free(ctx_);
+    }
+    ctx_ = new_ctx;
+    return true;
+}
+
+bool TlsContext::Reload(const TlsConfig& new_config, std::string* error_out) {
+    auto wire_alpn = EncodeWireAlpn(new_config.alpn_protocols);
+    SSL_CTX* new_ctx = CreateAndConfigureCtx(new_config, wire_alpn, this, error_out);
+    if (!new_ctx) {
+        return false;
+    }
+
+    std::lock_guard lock(mutex_);
+    SSL_CTX* old_ctx = ctx_;
+    ctx_ = new_ctx;
+    config_ = new_config;
+    wire_alpn_protocols_ = std::move(wire_alpn);
+
+    if (old_ctx) {
+        SSL_CTX_free(old_ctx);
+    }
     return true;
 }
 
@@ -187,33 +211,14 @@ std::unique_ptr<TlsStream> TlsContext::CreateStream() const {
 }
 
 bool TlsContext::ReloadCertificates(const std::string& cert_file, const std::string& key_file, std::string* error_out) {
-    std::lock_guard lock(mutex_);
-    if (!ctx_) {
-        if (error_out) *error_out = "TlsContext is uninitialized";
-        return false;
+    TlsConfig cfg;
+    {
+        std::lock_guard lock(mutex_);
+        cfg = config_;
     }
-
-    if (SSL_CTX_use_certificate_chain_file(ctx_, cert_file.c_str()) != 1) {
-        std::string err = "Failed to reload certificate file '" + cert_file + "': " + GetLastOpenSslError();
-        if (error_out) *error_out = err;
-        return false;
-    }
-
-    if (SSL_CTX_use_PrivateKey_file(ctx_, key_file.c_str(), SSL_FILETYPE_PEM) != 1) {
-        std::string err = "Failed to reload private key file '" + key_file + "': " + GetLastOpenSslError();
-        if (error_out) *error_out = err;
-        return false;
-    }
-
-    if (SSL_CTX_check_private_key(ctx_) != 1) {
-        std::string err = "Reloaded private key does not match certificate: " + GetLastOpenSslError();
-        if (error_out) *error_out = err;
-        return false;
-    }
-
-    config_.cert_file = cert_file;
-    config_.key_file = key_file;
-    return true;
+    cfg.cert_file = cert_file;
+    cfg.key_file = key_file;
+    return Reload(cfg, error_out);
 }
 
 } // namespace helios

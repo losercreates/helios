@@ -331,6 +331,35 @@ void WorkerPool::ReloadSecurity(const SecurityConfig& security) {
     }
 }
 
+bool WorkerPool::ReloadTls(const TlsConfig& tls_config, std::string* error_out) {
+    if (!tls_config.enabled) {
+        tls_context_ = nullptr;
+        for (auto& w : workers_) {
+            w->GetProxy().SetTlsContext(nullptr);
+        }
+        config_.tls = tls_config;
+        return true;
+    }
+
+    if (!tls_context_) {
+        auto new_ctx = std::make_shared<TlsContext>(tls_config);
+        if (!new_ctx->Initialize(error_out)) {
+            return false;
+        }
+        tls_context_ = std::move(new_ctx);
+    } else {
+        if (!tls_context_->Reload(tls_config, error_out)) {
+            return false;
+        }
+    }
+
+    config_.tls = tls_config;
+    for (auto& w : workers_) {
+        w->GetProxy().SetTlsContext(tls_context_);
+    }
+    return true;
+}
+
 bool WorkerPool::Start() {
     if (running_.load(std::memory_order_acquire)) return true;
 

@@ -125,6 +125,7 @@ public:
     void SetTlsContext(std::shared_ptr<TlsContext> ctx);
     [[nodiscard]] std::shared_ptr<TlsContext> GetTlsContext() const noexcept { return tls_context_; }
     void ReloadSecurity(const SecurityConfig& security);
+    bool ReloadTls(const TlsConfig& tls_config, std::string* error_out = nullptr);
 
     bool Start();
     void Stop();

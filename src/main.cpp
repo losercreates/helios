@@ -196,6 +196,15 @@ int main(int argc, char* argv[]) {
 
                             pool.ReloadBackends(new_endpoints);
                             pool.ReloadSecurity(res.config.security);
+                            if (res.config.tls.enabled) {
+                                std::string tls_err;
+                                if (!pool.ReloadTls(res.config.tls, &tls_err)) {
+                                    std::cerr << "[HELIOS] TLS configuration reload failed: " << tls_err
+                                              << " - Retaining current TLS context.\n";
+                                } else {
+                                    std::cout << "[HELIOS] TLS certificates and security configuration reloaded successfully.\n";
+                                }
+                            }
                             config = std::move(res.config);
                             std::cout << "[HELIOS] Configuration reloaded successfully ("
                                       << new_endpoints.size() << " backend endpoint(s) active).\n";

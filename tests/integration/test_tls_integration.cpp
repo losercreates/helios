@@ -410,3 +410,99 @@ TEST_F(TlsIntegrationTest, WorkerPoolTlsTermination) {
     pool.Stop();
     pool.Join();
 }
+
+// 5. Dynamic TLS Certificate & Configuration Hot-Reload (SIGHUP behavior)
+TEST_F(TlsIntegrationTest, WorkerPoolSighupTlsHotReload) {
+    TestHttpBackend backend;
+    ASSERT_TRUE(backend.Start());
+
+    // Generate alternate self-signed certificate with distinct CN
+    std::string cert2_path = cert_path_ + ".v2.crt";
+    std::string key2_path = key_path_ + ".v2.key";
+    std::string cmd = "openssl req -x509 -newkey rsa:2048 -nodes -keyout " + key2_path +
+                      " -out " + cert2_path + " -days 1 -subj '/CN=localhost-v2' "
+                      "-addext 'subjectAltName=DNS:localhost,IP:127.0.0.1' 2>/dev/null";
+    ASSERT_EQ(::system(cmd.c_str()), 0);
+
+    WorkerPoolConfig config;
+    config.num_workers = 2;
+    config.listen_port = 0;
+    config.tls.enabled = true;
+    config.tls.cert_file = cert_path_;
+    config.tls.key_file = key_path_;
+
+    WorkerPool pool(config);
+    pool.AddBackend("127.0.0.1", backend.GetPort());
+    ASSERT_TRUE(pool.Start());
+
+    uint16_t port = pool.GetPort();
+    ASSERT_GT(port, 0);
+
+    auto verify_server_cert_cn = [&](const std::string& expected_cn) {
+        SSL_CTX* client_ctx = SSL_CTX_new(TLS_client_method());
+        EXPECT_NE(client_ctx, nullptr);
+        SSL_CTX_set_verify(client_ctx, SSL_VERIFY_NONE, nullptr);
+
+        int sock_fd = ConnectToProxy(port);
+        EXPECT_GT(sock_fd, 0);
+
+        SSL* ssl = SSL_new(client_ctx);
+        SSL_set_fd(ssl, sock_fd);
+        EXPECT_EQ(SSL_connect(ssl), 1);
+
+        X509* server_cert = SSL_get_peer_certificate(ssl);
+        EXPECT_NE(server_cert, nullptr);
+        if (server_cert) {
+            char name_buf[256];
+            X509_NAME_oneline(X509_get_subject_name(server_cert), name_buf, sizeof(name_buf));
+            EXPECT_NE(std::string(name_buf).find(expected_cn), std::string::npos)
+                << "Expected CN: " << expected_cn << " but got: " << name_buf;
+            X509_free(server_cert);
+        }
+
+        std::string req = "GET /check HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        SSL_write(ssl, req.data(), static_cast<int>(req.size()));
+
+        char buf[1024];
+        int n = SSL_read(ssl, buf, sizeof(buf) - 1);
+        EXPECT_GT(n, 0);
+        if (n > 0) {
+            buf[n] = '\0';
+            EXPECT_NE(std::string(buf).find("200 OK"), std::string::npos);
+        }
+
+        SSL_shutdown(ssl);
+        SSL_free(ssl);
+        SSL_CTX_free(client_ctx);
+        close(sock_fd);
+    };
+
+    // Phase 1: Verify initial certificate CN (localhost)
+    verify_server_cert_cn("localhost");
+
+    // Phase 2: Dynamic hot-reload with Certificate v2
+    TlsConfig new_tls_config = config.tls;
+    new_tls_config.cert_file = cert2_path;
+    new_tls_config.key_file = key2_path;
+
+    std::string err;
+    ASSERT_TRUE(pool.ReloadTls(new_tls_config, &err)) << "Reload error: " << err;
+
+    // Phase 3: Verify new connections receive renewed certificate (localhost-v2)
+    verify_server_cert_cn("localhost-v2");
+
+    // Phase 4: Negative test - invalid reload must fail and preserve active context
+    TlsConfig bad_config = new_tls_config;
+    bad_config.cert_file = "/nonexistent/invalid.crt";
+    EXPECT_FALSE(pool.ReloadTls(bad_config, &err));
+    EXPECT_FALSE(err.empty());
+
+    // Phase 5: Verify proxy still functions with Certificate v2 without outage
+    verify_server_cert_cn("localhost-v2");
+
+    pool.Stop();
+    pool.Join();
+
+    std::remove(cert2_path.c_str());
+    std::remove(key2_path.c_str());
+}

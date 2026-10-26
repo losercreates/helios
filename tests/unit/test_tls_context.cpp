@@ -112,6 +112,45 @@ TEST_F(TlsContextTest, ReloadCertificatesSuccess) {
 
     std::string err;
     EXPECT_TRUE(context.ReloadCertificates(kCertPath, kKeyPath, &err)) << "Error: " << err;
+    EXPECT_TRUE(context.IsInitialized());
+}
+
+TEST_F(TlsContextTest, ReloadFullConfigSuccess) {
+    TlsConfig config;
+    config.enabled = true;
+    config.cert_file = kCertPath;
+    config.key_file = kKeyPath;
+    config.min_version = "TLSv1.2";
+
+    TlsContext context(config);
+    EXPECT_TRUE(context.Initialize());
+
+    TlsConfig new_config = config;
+    new_config.min_version = "TLSv1.3";
+    std::string err;
+    EXPECT_TRUE(context.Reload(new_config, &err)) << "Error: " << err;
+    EXPECT_TRUE(context.IsInitialized());
+    EXPECT_EQ(context.GetConfig().min_version, "TLSv1.3");
+}
+
+TEST_F(TlsContextTest, ReloadInvalidCertPreservesExistingContext) {
+    TlsConfig config;
+    config.enabled = true;
+    config.cert_file = kCertPath;
+    config.key_file = kKeyPath;
+
+    TlsContext context(config);
+    EXPECT_TRUE(context.Initialize());
+    EXPECT_TRUE(context.IsInitialized());
+
+    std::string err;
+    EXPECT_FALSE(context.ReloadCertificates("/nonexistent/cert.crt", kKeyPath, &err));
+    EXPECT_FALSE(err.empty());
+    // Crucial: Context MUST remain valid and initialized after failed reload
+    EXPECT_TRUE(context.IsInitialized());
+
+    auto stream = context.CreateStream();
+    EXPECT_NE(stream, nullptr);
 }
 
 TEST_F(TlsContextTest, CreateStreamProducesValidTlsStream) {
