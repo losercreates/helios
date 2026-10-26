@@ -26,6 +26,7 @@
 #include <cstdint>
 #include <chrono>
 #include <string>
+#include <mutex>
 
 #include "net/connection_slab_pool.hpp"
 #include "tls/tls_context.hpp"
@@ -138,14 +139,32 @@ public:
     [[nodiscard]] BackendConnectionPool* GetBackendPool() noexcept { return backend_pool_.get(); }
     [[nodiscard]] const BackendConnectionPool* GetBackendPool() const noexcept { return backend_pool_.get(); }
 
-    void SetAcl(std::shared_ptr<IpAcl> acl) noexcept { acl_ = std::move(acl); }
-    [[nodiscard]] std::shared_ptr<IpAcl> GetAcl() const noexcept { return acl_; }
+    void SetAcl(std::shared_ptr<IpAcl> acl) noexcept {
+        std::lock_guard lock(security_mutex_);
+        acl_ = std::move(acl);
+    }
+    [[nodiscard]] std::shared_ptr<IpAcl> GetAcl() const noexcept {
+        std::lock_guard lock(security_mutex_);
+        return acl_;
+    }
 
-    void SetRateLimiter(std::shared_ptr<RateLimiter> limiter) noexcept { rate_limiter_ = std::move(limiter); }
-    [[nodiscard]] std::shared_ptr<RateLimiter> GetRateLimiter() const noexcept { return rate_limiter_; }
+    void SetRateLimiter(std::shared_ptr<RateLimiter> limiter) noexcept {
+        std::lock_guard lock(security_mutex_);
+        rate_limiter_ = std::move(limiter);
+    }
+    [[nodiscard]] std::shared_ptr<RateLimiter> GetRateLimiter() const noexcept {
+        std::lock_guard lock(security_mutex_);
+        return rate_limiter_;
+    }
 
-    void SetTlsContext(std::shared_ptr<TlsContext> tls_context) noexcept { tls_context_ = std::move(tls_context); }
-    [[nodiscard]] std::shared_ptr<TlsContext> GetTlsContext() const noexcept { return tls_context_; }
+    void SetTlsContext(std::shared_ptr<TlsContext> tls_context) noexcept {
+        std::lock_guard lock(tls_mutex_);
+        tls_context_ = std::move(tls_context);
+    }
+    [[nodiscard]] std::shared_ptr<TlsContext> GetTlsContext() const noexcept {
+        std::lock_guard lock(tls_mutex_);
+        return tls_context_;
+    }
 
     [[nodiscard]] const BufferPool& GetBufferPool() const noexcept { return buffer_pool_; }
 
@@ -284,8 +303,10 @@ private:
 
     L7Router router_;
     std::unordered_map<std::string, NamedPool> named_pools_;
+    mutable std::mutex security_mutex_;
     std::shared_ptr<IpAcl> acl_;
     std::shared_ptr<RateLimiter> rate_limiter_;
+    mutable std::mutex tls_mutex_;
     std::shared_ptr<TlsContext> tls_context_;
 };
 

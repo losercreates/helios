@@ -372,7 +372,15 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     SocketUtils::SetTcpNoDelay(client_fd);
 
     // 1. Client IP Access Control List (ACL) Check
-    if (acl_ && !acl_->IsAllowed(accept_client_addr_)) {
+    std::shared_ptr<IpAcl> current_acl;
+    std::shared_ptr<RateLimiter> current_rate_limiter;
+    {
+        std::lock_guard lock(security_mutex_);
+        current_acl = acl_;
+        current_rate_limiter = rate_limiter_;
+    }
+
+    if (current_acl && !current_acl->IsAllowed(accept_client_addr_)) {
         if (metrics_) {
             metrics_->acl_rejected_total.fetch_add(1, std::memory_order_relaxed);
         }
@@ -382,7 +390,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     }
 
     // 2. Transport-Layer Rate Limiting (Pure L4 Proxy Mode)
-    if (!config_.enable_l7_routing && rate_limiter_ && !rate_limiter_->Allow(accept_client_addr_)) {
+    if (!config_.enable_l7_routing && current_rate_limiter && !current_rate_limiter->Allow(accept_client_addr_)) {
         if (metrics_) {
             metrics_->rate_limit_rejected_total.fetch_add(1, std::memory_order_relaxed);
         }
@@ -410,8 +418,14 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
         data->conn = conn;
         data->l7_routed = false;
 
-        if (tls_context_ && tls_context_->IsInitialized()) {
-            data->tls_stream = tls_context_->CreateStream();
+        std::shared_ptr<TlsContext> tls_ctx;
+        {
+            std::lock_guard lock(tls_mutex_);
+            tls_ctx = tls_context_;
+        }
+
+        if (tls_ctx && tls_ctx->IsInitialized()) {
+            data->tls_stream = tls_ctx->CreateStream();
             data->tls_handshaking = true;
             if (metrics_) {
                 metrics_->tls_active_connections.fetch_add(1, std::memory_order_relaxed);
@@ -861,7 +875,8 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                 }
 
                 // Headers complete! Check L7 Rate Limiter
-                if (rate_limiter_ && !rate_limiter_->Allow(data.client_ip)) {
+                auto current_rl = GetRateLimiter();
+                if (current_rl && !current_rl->Allow(data.client_ip)) {
                     static constexpr std::string_view k429Response =
                         "HTTP/1.1 429 Too Many Requests\r\n"
                         "Content-Type: text/plain\r\n"
@@ -1384,8 +1399,9 @@ void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
         }
     }
 
-    if (rate_limiter_) {
-        rate_limiter_->CleanupIdle(std::chrono::milliseconds(60000));
+    auto current_rl = GetRateLimiter();
+    if (current_rl) {
+        current_rl->CleanupIdle(std::chrono::milliseconds(60000));
     }
 
     if (connections_.empty()) return;
