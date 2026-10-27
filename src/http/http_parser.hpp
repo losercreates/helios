@@ -73,6 +73,8 @@ struct HttpRequest {
     bool keep_alive{true};
     bool headers_complete{false};
     bool is_complete{false};
+    bool is_upgrade{false};
+    std::string_view upgrade_protocol{};
 
     [[nodiscard]] std::span<const HttpHeader> Headers() const noexcept {
         return std::span<const HttpHeader>(headers.data(), num_headers);
@@ -81,6 +83,8 @@ struct HttpRequest {
     [[nodiscard]] std::optional<std::string_view> GetHeader(std::string_view name) const noexcept;
     [[nodiscard]] bool HasHeader(std::string_view name) const noexcept;
     [[nodiscard]] std::optional<std::string_view> GetQueryParam(std::string_view key) const noexcept;
+    [[nodiscard]] bool IsUpgrade() const noexcept { return is_upgrade; }
+    [[nodiscard]] bool IsWebSocketUpgrade() const noexcept;
     void Reset() noexcept;
 };
 
@@ -139,6 +143,9 @@ public:
 
     // Case-insensitive ASCII equality helper
     static bool CaseInsensitiveEqual(std::string_view a, std::string_view b) noexcept;
+
+    // Checks if a comma-delimited header contains a specific token (case-insensitive, trims OWS)
+    [[nodiscard]] static bool ContainsToken(std::string_view header_val, std::string_view token) noexcept;
 
 private:
     enum class ParserState : uint8_t {

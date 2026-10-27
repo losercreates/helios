@@ -216,6 +216,8 @@ private:
         uint64_t bytes_received{0};
         bool parsed_request{false};
         bool parsed_response{false};
+        bool is_websocket{false};
+        bool websocket_upgraded{false};
 
         std::unique_ptr<TlsStream> tls_stream;
         bool tls_handshaking{false};
@@ -226,6 +228,9 @@ private:
             }
             if (tls_stream && metrics) {
                 metrics->tls_active_connections.fetch_sub(1, std::memory_order_relaxed);
+            }
+            if (websocket_upgraded && metrics) {
+                metrics->websocket_active_connections.fetch_sub(1, std::memory_order_relaxed);
             }
             auto now = std::chrono::steady_clock::now();
             auto duration_us = std::chrono::duration_cast<std::chrono::microseconds>(now - start_time);

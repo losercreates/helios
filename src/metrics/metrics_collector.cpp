@@ -292,6 +292,24 @@ std::string MetricsCollector::RenderPrometheusText() const {
         ss << "helios_tls_active_connections{worker=\"" << w->worker_id << "\"} "
            << w->tls_active_connections.load(std::memory_order_relaxed) << "\n";
     }
+    ss << "\n";
+
+    // 23. helios_websocket_upgrades_total
+    ss << "# HELP helios_websocket_upgrades_total Total successful WebSocket HTTP upgrade handshakes\n";
+    ss << "# TYPE helios_websocket_upgrades_total counter\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_websocket_upgrades_total{worker=\"" << w->worker_id << "\"} "
+           << w->websocket_upgrades_total.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 24. helios_websocket_active_connections
+    ss << "# HELP helios_websocket_active_connections Current active upgraded WebSocket client connections\n";
+    ss << "# TYPE helios_websocket_active_connections gauge\n";
+    for (const auto& w : snapshot) {
+        ss << "helios_websocket_active_connections{worker=\"" << w->worker_id << "\"} "
+           << w->websocket_active_connections.load(std::memory_order_relaxed) << "\n";
+    }
 
     return ss.str();
 }

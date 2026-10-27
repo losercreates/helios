@@ -677,3 +677,148 @@ TEST(HttpParserPartialStreamReassembly, MoveConstructionRebasing) {
     EXPECT_EQ(p2.GetRequest().path, "/moved");
     EXPECT_EQ(p2.GetRequest().GetHeader("Host"), "example.org");
 }
+
+// ============================================================================
+// 8. WebSocket and HTTP Upgrade Tests (RFC 6455 / RFC 7230 §6.7)
+// ============================================================================
+
+TEST(HttpParserWebSocketUpgrade, StandardWebSocketUpgrade) {
+    HttpParser parser;
+    std::string raw =
+        "GET /chat HTTP/1.1\r\n"
+        "Host: server.example.com\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "\r\n";
+
+    ParseResult res = parser.Parse(raw);
+    EXPECT_TRUE(res.IsComplete());
+    EXPECT_EQ(res.status, ParseStatus::Complete);
+
+    const auto& req = parser.GetRequest();
+    EXPECT_EQ(req.method, HttpMethod::GET);
+    EXPECT_TRUE(req.IsUpgrade());
+    EXPECT_EQ(req.upgrade_protocol, "websocket");
+    EXPECT_TRUE(req.IsWebSocketUpgrade());
+    EXPECT_EQ(req.GetHeader("Sec-WebSocket-Key"), "dGhlIHNhbXBsZSBub25jZQ==");
+    EXPECT_EQ(req.GetHeader("Sec-WebSocket-Version"), "13");
+}
+
+TEST(HttpParserWebSocketUpgrade, MultiTokenConnectionHeader) {
+    HttpParser parser;
+    std::string raw =
+        "GET /ws HTTP/1.1\r\n"
+        "Host: server.example.com\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: keep-alive, Upgrade\r\n"
+        "\r\n";
+
+    ParseResult res = parser.Parse(raw);
+    EXPECT_TRUE(res.IsComplete());
+
+    const auto& req = parser.GetRequest();
+    EXPECT_TRUE(req.keep_alive);
+    EXPECT_TRUE(req.IsUpgrade());
+    EXPECT_TRUE(req.IsWebSocketUpgrade());
+}
+
+TEST(HttpParserWebSocketUpgrade, CaseInsensitiveHeadersAndTokens) {
+    HttpParser parser;
+    std::string raw =
+        "GET /socket HTTP/1.1\r\n"
+        "Host: server.example.com\r\n"
+        "UPGRADE: WebSocket\r\n"
+        "CONNECTION: UPGRADE\r\n"
+        "\r\n";
+
+    ParseResult res = parser.Parse(raw);
+    EXPECT_TRUE(res.IsComplete());
+
+    const auto& req = parser.GetRequest();
+    EXPECT_TRUE(req.IsUpgrade());
+    EXPECT_EQ(req.upgrade_protocol, "WebSocket");
+    EXPECT_TRUE(req.IsWebSocketUpgrade());
+}
+
+TEST(HttpParserWebSocketUpgrade, NonWebSocketUpgrade) {
+    HttpParser parser;
+    std::string raw =
+        "GET / HTTP/1.1\r\n"
+        "Host: server.example.com\r\n"
+        "Upgrade: h2c\r\n"
+        "Connection: Upgrade, HTTP2-Settings\r\n"
+        "\r\n";
+
+    ParseResult res = parser.Parse(raw);
+    EXPECT_TRUE(res.IsComplete());
+
+    const auto& req = parser.GetRequest();
+    EXPECT_TRUE(req.IsUpgrade());
+    EXPECT_EQ(req.upgrade_protocol, "h2c");
+    EXPECT_FALSE(req.IsWebSocketUpgrade());
+}
+
+TEST(HttpParserWebSocketUpgrade, NonGetMethodRejectedForWebSocket) {
+    HttpParser parser;
+    std::string raw =
+        "POST /chat HTTP/1.1\r\n"
+        "Host: server.example.com\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    ParseResult res = parser.Parse(raw);
+    EXPECT_TRUE(res.IsComplete());
+
+    const auto& req = parser.GetRequest();
+    EXPECT_EQ(req.method, HttpMethod::POST);
+    EXPECT_TRUE(req.IsUpgrade());
+    // RFC 6455 requires GET method
+    EXPECT_FALSE(req.IsWebSocketUpgrade());
+}
+
+TEST(HttpParserWebSocketUpgrade, MissingConnectionUpgradeToken) {
+    HttpParser parser;
+    std::string raw =
+        "GET /chat HTTP/1.1\r\n"
+        "Host: server.example.com\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: keep-alive\r\n"
+        "\r\n";
+
+    ParseResult res = parser.Parse(raw);
+    EXPECT_TRUE(res.IsComplete());
+
+    const auto& req = parser.GetRequest();
+    // Per RFC 7230 §6.7, Upgrade header without Connection: upgrade must not trigger upgrade
+    EXPECT_FALSE(req.IsUpgrade());
+    EXPECT_FALSE(req.IsWebSocketUpgrade());
+}
+
+TEST(HttpParserWebSocketUpgrade, ContainsTokenHelper) {
+    EXPECT_TRUE(HttpParser::ContainsToken("Upgrade", "upgrade"));
+    EXPECT_TRUE(HttpParser::ContainsToken("keep-alive, Upgrade", "upgrade"));
+    EXPECT_TRUE(HttpParser::ContainsToken("Upgrade, keep-alive", "UPGRADE"));
+    EXPECT_TRUE(HttpParser::ContainsToken("  keep-alive ,   Upgrade  ", "upgrade"));
+    EXPECT_FALSE(HttpParser::ContainsToken("keep-alive", "upgrade"));
+    EXPECT_FALSE(HttpParser::ContainsToken("", "upgrade"));
+    EXPECT_FALSE(HttpParser::ContainsToken("upgrade", ""));
+}
+
+TEST(HttpParserWebSocketUpgrade, MoveConstructionRebasesUpgradeProtocol) {
+    HttpParser p1;
+    p1.Parse("GET /ws HTTP/1.1\r\n");
+    p1.Parse("Host: example.com\r\n");
+    p1.Parse("Upgrade: websocket\r\n");
+    p1.Parse("Connection: Upgrade\r\n\r\n");
+
+    EXPECT_TRUE(p1.GetRequest().is_complete);
+    EXPECT_TRUE(p1.GetRequest().IsWebSocketUpgrade());
+
+    HttpParser p2(std::move(p1));
+    EXPECT_TRUE(p2.GetRequest().IsWebSocketUpgrade());
+    EXPECT_EQ(p2.GetRequest().upgrade_protocol, "websocket");
+}

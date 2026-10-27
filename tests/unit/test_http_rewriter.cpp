@@ -89,3 +89,33 @@ TEST(HttpRewriterTest, AutoGeneratesUniqueRequestIdIfEmpty) {
     EXPECT_FALSE(id2.empty());
     EXPECT_NE(id1, id2);
 }
+
+TEST(HttpRewriterTest, PreservesWebSocketHandshakeHeaders) {
+    std::string req =
+        "GET /chat HTTP/1.1\r\n"
+        "Host: ws.example.com\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        "Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "Sec-WebSocket-Protocol: chat, superchat\r\n"
+        "Sec-WebSocket-Extensions: permessage-deflate\r\n"
+        "\r\n";
+
+    HeaderInjectionOptions opts;
+    opts.client_ip = "192.0.2.1";
+    opts.client_proto = "https";
+    opts.request_id = "ws-req-001";
+
+    std::string rewritten = HttpRewriter::RewriteRequest(req, opts);
+
+    EXPECT_NE(rewritten.find("Upgrade: websocket\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("Connection: Upgrade\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("Sec-WebSocket-Version: 13\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("Sec-WebSocket-Protocol: chat, superchat\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("Sec-WebSocket-Extensions: permessage-deflate\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("X-Forwarded-For: 192.0.2.1\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("X-Forwarded-Proto: https\r\n"), std::string::npos);
+    EXPECT_NE(rewritten.find("X-Request-ID: ws-req-001\r\n"), std::string::npos);
+}

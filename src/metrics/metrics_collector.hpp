@@ -81,6 +81,10 @@ struct WorkerMetrics {
     std::atomic<uint64_t> tls_handshake_errors_total{0};
     std::atomic<int64_t> tls_active_connections{0};
 
+    // 9. WebSocket Metrics
+    std::atomic<uint64_t> websocket_upgrades_total{0};
+    std::atomic<int64_t> websocket_active_connections{0};
+
     explicit WorkerMetrics(uint32_t id, std::vector<uint64_t> latency_buckets = {50, 100, 300})
         : worker_id(id), latency_histogram(std::move(latency_buckets)) {}
 

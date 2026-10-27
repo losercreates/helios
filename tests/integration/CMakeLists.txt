@@ -12,6 +12,7 @@ add_executable(helios_integration_tests
     test_security_integration.cpp
     test_memory_optimization_integration.cpp
     test_tls_integration.cpp
+    test_websocket_integration.cpp
 )
 
 target_compile_definitions(helios_integration_tests PRIVATE

@@ -95,6 +95,21 @@ bool HttpParser::CaseInsensitiveEqual(std::string_view a, std::string_view b) no
     return true;
 }
 
+bool HttpParser::ContainsToken(std::string_view header_val, std::string_view token) noexcept {
+    if (header_val.empty() || token.empty()) return false;
+    std::string_view rem = header_val;
+    while (!rem.empty()) {
+        auto comma = rem.find(',');
+        std::string_view item = (comma != std::string_view::npos) ? rem.substr(0, comma) : rem;
+        rem = (comma != std::string_view::npos) ? rem.substr(comma + 1) : std::string_view{};
+        item = TrimOws(item);
+        if (CaseInsensitiveEqual(item, token)) {
+            return true;
+        }
+    }
+    return false;
+}
+
 std::optional<std::string_view> HttpRequest::GetHeader(std::string_view name) const noexcept {
     for (size_t i = 0; i < num_headers; ++i) {
         if (HttpParser::CaseInsensitiveEqual(headers[i].name, name)) {
@@ -128,6 +143,16 @@ std::optional<std::string_view> HttpRequest::GetQueryParam(std::string_view key)
     return std::nullopt;
 }
 
+bool HttpRequest::IsWebSocketUpgrade() const noexcept {
+    if (method != HttpMethod::GET && !HttpParser::CaseInsensitiveEqual(method_str, "GET")) {
+        return false;
+    }
+    if (!is_upgrade) {
+        return false;
+    }
+    return HttpParser::ContainsToken(upgrade_protocol, "websocket");
+}
+
 void HttpRequest::Reset() noexcept {
     method = HttpMethod::UNKNOWN;
     method_str = {};
@@ -144,6 +169,8 @@ void HttpRequest::Reset() noexcept {
     keep_alive = true;
     headers_complete = false;
     is_complete = false;
+    is_upgrade = false;
+    upgrade_protocol = {};
 }
 
 HttpParser::HttpParser(size_t max_header_size) noexcept
@@ -213,6 +240,7 @@ void HttpParser::RebaseViews(const char* old_base, const char* new_base) noexcep
     rebase_sv(request_.uri);
     rebase_sv(request_.path);
     rebase_sv(request_.query);
+    rebase_sv(request_.upgrade_protocol);
     for (size_t i = 0; i < request_.num_headers; ++i) {
         rebase_sv(request_.headers[i].name);
         rebase_sv(request_.headers[i].value);
@@ -706,13 +734,20 @@ bool HttpParser::ValidateHeadersRfc9112(ParseResult& result) {
         return false;
     }
 
-    // 4. Connection Keep-Alive determination
+    // 4. Connection Keep-Alive and Upgrade determination
     if (auto conn_hdr = request_.GetHeader("Connection"); conn_hdr.has_value()) {
         std::string_view conn_val = *conn_hdr;
-        if (CaseInsensitiveEqual(conn_val, "close")) {
+        if (ContainsToken(conn_val, "close")) {
             request_.keep_alive = false;
-        } else if (CaseInsensitiveEqual(conn_val, "keep-alive")) {
+        } else if (ContainsToken(conn_val, "keep-alive")) {
             request_.keep_alive = true;
+        }
+
+        if (ContainsToken(conn_val, "upgrade")) {
+            if (auto up_hdr = request_.GetHeader("Upgrade"); up_hdr.has_value()) {
+                request_.is_upgrade = true;
+                request_.upgrade_protocol = TrimOws(*up_hdr);
+            }
         }
     }
 

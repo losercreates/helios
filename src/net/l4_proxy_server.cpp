@@ -925,6 +925,9 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                 data.uri = std::string(req.uri);
                 data.http_version = "HTTP/" + std::to_string(req.http_major) + "." + std::to_string(req.http_minor);
                 data.parsed_request = true;
+                if (req.IsWebSocketUpgrade()) {
+                    data.is_websocket = true;
+                }
 
                 HeaderInjectionOptions inj_opts;
                 inj_opts.client_ip = data.client_ip;
@@ -1078,6 +1081,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
             if (metrics_) {
                 metrics_->bytes_read_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
             }
+            conn->Touch();
             if (data.tls_stream) {
                 std::string plain;
                 std::span<const uint8_t> in_cipher(buf->data, static_cast<size_t>(event.result));
@@ -1091,6 +1095,13 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                 if (dec_res.peer_closed) {
                     buffer_pool_.Release(buf);
                     conn->HandleClientFin();
+                    conn->DecrementPendingCqe();
+                    return;
+                }
+                if (plain.empty()) {
+                    buffer_pool_.Release(buf);
+                    TryStartClientRead(data);
+                    engine_.Submit();
                     conn->DecrementPendingCqe();
                     return;
                 }
@@ -1246,6 +1257,7 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
             if (metrics_) {
                 metrics_->bytes_written_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
             }
+            conn->Touch();
             if (!data.parsed_response) {
                 data.parsed_response = true;
                 std::string_view resp(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
@@ -1261,6 +1273,14 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
                         if (code >= 100 && code <= 599) {
                             data.status_code = code;
                         }
+                    }
+                }
+                if (data.is_websocket && data.status_code == 101) {
+                    data.websocket_upgraded = true;
+                    conn->SetBackendReusable(false);
+                    if (metrics_) {
+                        metrics_->websocket_upgrades_total.fetch_add(1, std::memory_order_relaxed);
+                        metrics_->websocket_active_connections.fetch_add(1, std::memory_order_relaxed);
                     }
                 }
             }
@@ -1337,7 +1357,7 @@ void L4ProxyServer::HandleClientWriteCompletion(ConnectionStateData& data, const
             // Complete payload write succeeded
             buffer_pool_.Release(buf);
             data.client_write_ctx.buf = nullptr;
-            if (backend_pool_ && !conn->IsBackendReadStopped()) {
+            if (backend_pool_ && !conn->IsBackendReadStopped() && !data.websocket_upgraded) {
                 conn->SetBackendReusable(true);
             }
             TryStartBackendRead(data);
@@ -1410,7 +1430,7 @@ void L4ProxyServer::CheckTimeouts(std::chrono::steady_clock::time_point now) {
         if (!data || !data->conn) continue;
 
         // Slowloris Anti-DoS Defense: Terminate pending L7 connections whose headers take longer than header_read_timeout
-        if (config_.enable_l7_routing && !data->l7_routed) {
+        if (config_.enable_l7_routing && !data->l7_routed && !data->websocket_upgraded) {
             auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(now - data->start_time);
             if (elapsed >= config_.header_read_timeout) {
                 static constexpr std::string_view k408Response =
