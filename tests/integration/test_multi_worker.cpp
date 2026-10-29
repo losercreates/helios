@@ -424,3 +424,111 @@ TEST(MultiWorkerIntegrationTest, SighupHotReloadEndToEnd) {
     pool.Stop();
     std::remove(tmp_yaml.c_str());
 }
+
+TEST(MultiWorkerIntegrationTest, SighupNamedPoolsAndRoutesHotReload) {
+    TestTcpBackend backend_api;
+    ASSERT_TRUE(backend_api.Start());
+
+    TestTcpBackend backend_web;
+    ASSERT_TRUE(backend_web.Start());
+
+    std::string tmp_yaml = "/tmp/helios_routes_sighup_test_" + std::to_string(getpid()) + ".yaml";
+    auto write_config = [&](bool swapped) {
+        std::ofstream ofs(tmp_yaml);
+        ofs << "server:\n"
+            << "  host: \"127.0.0.1\"\n"
+            << "  port: 0\n"
+            << "  workers: 2\n"
+            << "backend_pools:\n"
+            << "  - name: \"api_pool\"\n"
+            << "    algorithm: \"round_robin\"\n"
+            << "    endpoints:\n"
+            << "      - host: \"127.0.0.1\"\n"
+            << "        port: " << backend_api.GetPort() << "\n"
+            << "  - name: \"web_pool\"\n"
+            << "    algorithm: \"round_robin\"\n"
+            << "    endpoints:\n"
+            << "      - host: \"127.0.0.1\"\n"
+            << "        port: " << backend_web.GetPort() << "\n"
+            << "routes:\n"
+            << "  - name: \"api_route\"\n"
+            << "    path_prefix: \"/api/\"\n"
+            << "    target_pool: \"" << (swapped ? "web_pool" : "api_pool") << "\"\n"
+            << "  - name: \"web_route\"\n"
+            << "    path_prefix: \"/\"\n"
+            << "    target_pool: \"" << (swapped ? "api_pool" : "web_pool") << "\"\n"
+            << "default_pool: \"" << (swapped ? "api_pool" : "web_pool") << "\"\n";
+        ofs.close();
+    };
+
+    write_config(false);
+
+    auto load_res = ConfigLoader::LoadFromFile(tmp_yaml);
+    ASSERT_TRUE(load_res.success);
+
+    WorkerPool pool(load_res.config.ToWorkerPoolConfig());
+    pool.SetNamedPoolsAndRoutes(load_res.config.backend_pools, load_res.config.routes, load_res.config.default_pool);
+
+    ASSERT_TRUE(pool.Start());
+    uint16_t proxy_port = pool.GetPort();
+
+    auto send_http = [&](const std::string& path) -> bool {
+        int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) return false;
+        struct timeval tv{1, 0};
+        setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+        setsockopt(fd, SOL_SOCKET, SO_SNDTIMEO, &tv, sizeof(tv));
+        sockaddr_in addr{};
+        if (!SocketUtils::ParseSockAddr("127.0.0.1", proxy_port, &addr)) {
+            ::close(fd);
+            return false;
+        }
+        if (connect(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) {
+            ::close(fd);
+            return false;
+        }
+        std::string req = "GET " + path + " HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n";
+        send(fd, req.data(), req.size(), 0);
+        char buf[512];
+        ssize_t n = recv(fd, buf, sizeof(buf) - 1, 0);
+        ::close(fd);
+        return n > 0;
+    };
+
+    // 1. Initial routes: /api/ -> backend_api, / -> backend_web
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_TRUE(send_http("/api/data"));
+    }
+    EXPECT_EQ(backend_api.GetAcceptedCount(), 4u);
+    EXPECT_EQ(backend_web.GetAcceptedCount(), 0u);
+
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_TRUE(send_http("/index.html"));
+    }
+    EXPECT_EQ(backend_web.GetAcceptedCount(), 4u);
+
+    // 2. Perform SIGHUP Hot-Reload: swap routing rules
+    write_config(true);
+    auto reload_res = ConfigLoader::LoadFromFile(tmp_yaml);
+    ASSERT_TRUE(reload_res.success);
+
+    pool.ReloadNamedPoolsAndRoutes(reload_res.config.backend_pools, reload_res.config.routes, reload_res.config.default_pool);
+
+    backend_api.ResetAcceptedCount();
+    backend_web.ResetAcceptedCount();
+
+    // 3. Post-reload: /api/ now routes to backend_web, / routes to backend_api
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_TRUE(send_http("/api/data"));
+    }
+    EXPECT_EQ(backend_web.GetAcceptedCount(), 4u);
+    EXPECT_EQ(backend_api.GetAcceptedCount(), 0u);
+
+    for (int i = 0; i < 4; ++i) {
+        ASSERT_TRUE(send_http("/index.html"));
+    }
+    EXPECT_EQ(backend_api.GetAcceptedCount(), 4u);
+
+    pool.Stop();
+    std::remove(tmp_yaml.c_str());
+}

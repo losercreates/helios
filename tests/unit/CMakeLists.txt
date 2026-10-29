@@ -25,10 +25,12 @@ add_executable(helios_unit_tests
     test_connection_slab_pool.cpp
     test_tls_context.cpp
     test_tls_stream.cpp
+    test_health_check_manager.cpp
 )
 
 target_link_libraries(helios_unit_tests PRIVATE
     helios_lib
+    helios_test_common
     helios_epoll_baseline
     helios_compiler_flags
     helios_sanitizers

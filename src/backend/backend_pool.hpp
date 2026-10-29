@@ -8,6 +8,8 @@
 #include <mutex>
 #include <optional>
 #include <unordered_map>
+#include <string>
+#include <vector>
 
 namespace helios {
 
@@ -16,6 +18,20 @@ struct BackendConnectionPoolConfig {
     size_t max_idle_per_backend{32};
     size_t max_total_idle{1024};
     std::chrono::milliseconds idle_timeout{60000}; // 60 seconds
+};
+
+struct BackendEndpointConfig {
+    std::string host{"127.0.0.1"};
+    uint16_t port{9001};
+    uint32_t weight{1};
+};
+
+struct BackendPoolConfig {
+    std::string name{"default_pool"};
+    std::string algorithm{"round_robin"};
+    std::vector<BackendEndpointConfig> endpoints;
+    bool enable_connection_pool{false};
+    BackendConnectionPoolConfig connection_pool_config{};
 };
 
 // Represents an idle keep-alive backend connection

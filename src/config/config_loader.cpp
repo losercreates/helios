@@ -507,8 +507,18 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
                 L7RouteConfig r;
                 r.name = r_node["name"].AsString();
                 r.host = r_node["host"].AsString();
-                r.path_prefix = r_node["path_prefix"].AsString("/");
-                r.target_pool = r_node["target_pool"].AsString();
+                if (const auto* pp = r_node.Find("path_prefix")) {
+                    r.path_prefix = pp->AsString("/");
+                } else if (const auto* p = r_node.Find("path")) {
+                    r.path_prefix = p->AsString("/");
+                } else {
+                    r.path_prefix = "/";
+                }
+                if (const auto* tp = r_node.Find("target_pool")) {
+                    r.target_pool = tp->AsString();
+                } else if (const auto* bp = r_node.Find("backend_pool")) {
+                    r.target_pool = bp->AsString();
+                }
                 if (const auto* sp = r_node.Find("strip_prefix")) {
                     r.strip_prefix = sp->AsBool(false);
                 }
@@ -569,6 +579,100 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
             }
             if (const auto* to = sl_node->Find("header_read_timeout_ms")) {
                 config.security.slowloris.header_read_timeout = std::chrono::milliseconds(to->AsUInt(5000));
+            }
+        }
+
+        if (const auto* hdr_node = sec_node->Find("headers")) {
+            if (const auto* en = hdr_node->Find("enabled")) {
+                config.security.headers.enabled = en->AsBool(false);
+            } else {
+                config.security.headers.enabled = true;
+            }
+            if (const auto* srv = hdr_node->Find("server")) {
+                config.security.headers.set_server_header = true;
+                config.security.headers.server_value = StripQuotes(srv->AsString("helios"));
+            }
+            if (const auto* srv_en = hdr_node->Find("set_server_header")) {
+                config.security.headers.set_server_header = srv_en->AsBool(true);
+            }
+            if (const auto* hsts_node = hdr_node->Find("hsts")) {
+                if (hsts_node->IsMap()) {
+                    if (const auto* en = hsts_node->Find("enabled")) {
+                        config.security.headers.hsts_enabled = en->AsBool(false);
+                    }
+                    if (const auto* val = hsts_node->Find("value")) {
+                        config.security.headers.hsts_value = StripQuotes(val->AsString("max-age=31536000; includeSubDomains"));
+                    }
+                } else {
+                    config.security.headers.hsts_enabled = hsts_node->AsBool(false);
+                }
+            }
+            if (const auto* cto = hdr_node->Find("x_content_type_options")) {
+                config.security.headers.x_content_type_options = cto->AsBool(true);
+            }
+            if (const auto* xfo = hdr_node->Find("x_frame_options")) {
+                config.security.headers.x_frame_options = StripQuotes(xfo->AsString("SAMEORIGIN"));
+            }
+            if (const auto* custom_node = hdr_node->Find("custom_headers")) {
+                if (custom_node->IsSequence()) {
+                    for (const auto& ch : custom_node->sequence) {
+                        std::string name;
+                        std::string val;
+                        if (const auto* n = ch.Find("name")) name = StripQuotes(n->AsString());
+                        else if (const auto* k = ch.Find("key")) name = StripQuotes(k->AsString());
+                        if (const auto* v = ch.Find("value")) val = StripQuotes(v->AsString());
+                        if (!name.empty()) {
+                            config.security.headers.custom_headers.emplace_back(std::move(name), std::move(val));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if (const auto* top_hdr = root.Find("response_headers")) {
+        if (const auto* en = top_hdr->Find("enabled")) {
+            config.security.headers.enabled = en->AsBool(false);
+        } else {
+            config.security.headers.enabled = true;
+        }
+        if (const auto* srv = top_hdr->Find("server")) {
+            config.security.headers.set_server_header = true;
+            config.security.headers.server_value = StripQuotes(srv->AsString("helios"));
+        }
+        if (const auto* srv_en = top_hdr->Find("set_server_header")) {
+            config.security.headers.set_server_header = srv_en->AsBool(true);
+        }
+        if (const auto* hsts_node = top_hdr->Find("hsts")) {
+            if (hsts_node->IsMap()) {
+                if (const auto* en = hsts_node->Find("enabled")) {
+                    config.security.headers.hsts_enabled = en->AsBool(false);
+                }
+                if (const auto* val = hsts_node->Find("value")) {
+                    config.security.headers.hsts_value = StripQuotes(val->AsString("max-age=31536000; includeSubDomains"));
+                }
+            } else {
+                config.security.headers.hsts_enabled = hsts_node->AsBool(false);
+            }
+        }
+        if (const auto* cto = top_hdr->Find("x_content_type_options")) {
+            config.security.headers.x_content_type_options = cto->AsBool(true);
+        }
+        if (const auto* xfo = top_hdr->Find("x_frame_options")) {
+            config.security.headers.x_frame_options = StripQuotes(xfo->AsString("SAMEORIGIN"));
+        }
+        if (const auto* custom_node = top_hdr->Find("custom_headers")) {
+            if (custom_node->IsSequence()) {
+                for (const auto& ch : custom_node->sequence) {
+                    std::string name;
+                    std::string val;
+                    if (const auto* n = ch.Find("name")) name = StripQuotes(n->AsString());
+                    else if (const auto* k = ch.Find("key")) name = StripQuotes(k->AsString());
+                    if (const auto* v = ch.Find("value")) val = StripQuotes(v->AsString());
+                    if (!name.empty()) {
+                        config.security.headers.custom_headers.emplace_back(std::move(name), std::move(val));
+                    }
+                }
             }
         }
     }

@@ -173,3 +173,67 @@ logging:
     EXPECT_EQ(logger_cfg.queue_capacity, 131072);
     EXPECT_EQ(logger_cfg.flush_interval.count(), 250);
 }
+
+TEST(AccessLoggerTest, ReopenForLogRotation) {
+    auto ts = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
+    std::string active_log = "/tmp/helios_rotate_active_" + ts + ".log";
+    std::string rotated_log = "/tmp/helios_rotate_rotated_" + ts + ".log";
+
+    AccessLoggerConfig cfg;
+    cfg.enabled = true;
+    cfg.format = LogFormat::Json;
+    cfg.output = active_log;
+    cfg.queue_capacity = 1000;
+    cfg.flush_interval = std::chrono::milliseconds(20);
+
+    AccessLogger logger(cfg);
+    ASSERT_TRUE(logger.Start());
+
+    // 1. Write initial entries to active log
+    for (int i = 0; i < 5; ++i) {
+        auto entry = CreateSampleEntry();
+        entry.uri = "/pre-rotation/" + std::to_string(i);
+        logger.Log(std::move(entry));
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    ASSERT_TRUE(std::filesystem::exists(active_log));
+
+    // 2. Simulate logrotate: rename file
+    std::filesystem::rename(active_log, rotated_log);
+    ASSERT_TRUE(std::filesystem::exists(rotated_log));
+    ASSERT_FALSE(std::filesystem::exists(active_log));
+
+    // 3. Trigger Reopen()
+    EXPECT_TRUE(logger.Reopen());
+
+    // 4. Write subsequent entries post-rotation
+    for (int i = 0; i < 5; ++i) {
+        auto entry = CreateSampleEntry();
+        entry.uri = "/post-rotation/" + std::to_string(i);
+        logger.Log(std::move(entry));
+    }
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    logger.Stop();
+
+    // 5. Verify both files exist and contain their respective entries
+    ASSERT_TRUE(std::filesystem::exists(rotated_log));
+    ASSERT_TRUE(std::filesystem::exists(active_log));
+
+    {
+        std::ifstream in(rotated_log);
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_NE(content.find("/pre-rotation/"), std::string::npos);
+        EXPECT_EQ(content.find("/post-rotation/"), std::string::npos);
+    }
+    {
+        std::ifstream in(active_log);
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        EXPECT_NE(content.find("/post-rotation/"), std::string::npos);
+        EXPECT_EQ(content.find("/pre-rotation/"), std::string::npos);
+    }
+
+    std::filesystem::remove(rotated_log);
+    std::filesystem::remove(active_log);
+}

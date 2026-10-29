@@ -206,4 +206,172 @@ std::string HttpRewriter::RewriteRequest(std::string_view raw_request,
     return out;
 }
 
+std::string HttpRewriter::RewriteResponse(std::string_view raw_response,
+                                          const ResponseHeadersConfig& config,
+                                          bool is_tls) {
+    if (!config.enabled) {
+        return std::string(raw_response);
+    }
+
+    if (raw_response.rfind("HTTP/", 0) != 0) {
+        return std::string(raw_response);
+    }
+
+    auto header_end = raw_response.find("\r\n\r\n");
+    size_t delim_len = 4;
+    if (header_end == std::string_view::npos) {
+        header_end = raw_response.find("\n\n");
+        delim_len = 2;
+        if (header_end == std::string_view::npos) {
+            return std::string(raw_response);
+        }
+    }
+
+    std::string_view headers_part = raw_response.substr(0, header_end);
+    std::string_view body_part = raw_response.substr(header_end + delim_len);
+
+    auto first_crlf = headers_part.find("\r\n");
+    size_t line_delim_len = 2;
+    if (first_crlf == std::string_view::npos) {
+        first_crlf = headers_part.find('\n');
+        line_delim_len = 1;
+    }
+    if (first_crlf == std::string_view::npos) {
+        return std::string(raw_response);
+    }
+
+    std::string_view status_line = headers_part.substr(0, first_crlf);
+    std::string out;
+    out.reserve(raw_response.size() + 256);
+
+    out.append(status_line);
+    out.append("\r\n");
+
+    bool seen_server = false;
+    bool seen_hsts = false;
+    bool seen_content_type_options = false;
+    bool seen_frame_options = false;
+    std::vector<bool> seen_custom(config.custom_headers.size(), false);
+
+    size_t cur = first_crlf + line_delim_len;
+    while (cur < headers_part.size()) {
+        auto next_crlf = headers_part.find("\r\n", cur);
+        size_t next_delim = 2;
+        if (next_crlf == std::string_view::npos) {
+            next_crlf = headers_part.find('\n', cur);
+            next_delim = 1;
+        }
+
+        std::string_view line = (next_crlf != std::string_view::npos)
+                                ? headers_part.substr(cur, next_crlf - cur)
+                                : headers_part.substr(cur);
+
+        if (line.empty()) break;
+
+        auto colon = line.find(':');
+        if (colon != std::string_view::npos) {
+            std::string_view name = TrimWhitespace(line.substr(0, colon));
+
+            if (CaseInsensitiveEqual(name, "server")) {
+                seen_server = true;
+                if (config.set_server_header && !config.server_value.empty()) {
+                    out.append("Server: ");
+                    out.append(config.server_value);
+                    out.append("\r\n");
+                } else {
+                    out.append(line);
+                    out.append("\r\n");
+                }
+            } else if (CaseInsensitiveEqual(name, "strict-transport-security")) {
+                seen_hsts = true;
+                if (config.hsts_enabled && is_tls && !config.hsts_value.empty()) {
+                    out.append("Strict-Transport-Security: ");
+                    out.append(config.hsts_value);
+                    out.append("\r\n");
+                } else {
+                    out.append(line);
+                    out.append("\r\n");
+                }
+            } else if (CaseInsensitiveEqual(name, "x-content-type-options")) {
+                seen_content_type_options = true;
+                if (config.x_content_type_options) {
+                    out.append("X-Content-Type-Options: nosniff\r\n");
+                } else {
+                    out.append(line);
+                    out.append("\r\n");
+                }
+            } else if (CaseInsensitiveEqual(name, "x-frame-options")) {
+                seen_frame_options = true;
+                if (!config.x_frame_options.empty()) {
+                    out.append("X-Frame-Options: ");
+                    out.append(config.x_frame_options);
+                    out.append("\r\n");
+                } else {
+                    out.append(line);
+                    out.append("\r\n");
+                }
+            } else {
+                bool matched_custom = false;
+                for (size_t i = 0; i < config.custom_headers.size(); ++i) {
+                    if (CaseInsensitiveEqual(name, config.custom_headers[i].first)) {
+                        seen_custom[i] = true;
+                        matched_custom = true;
+                        out.append(config.custom_headers[i].first);
+                        out.append(": ");
+                        out.append(config.custom_headers[i].second);
+                        out.append("\r\n");
+                        break;
+                    }
+                }
+                if (!matched_custom) {
+                    out.append(line);
+                    out.append("\r\n");
+                }
+            }
+        } else {
+            out.append(line);
+            out.append("\r\n");
+        }
+
+        if (next_crlf == std::string_view::npos) break;
+        cur = next_crlf + next_delim;
+    }
+
+    // Inject missing configured headers
+    if (!seen_server && config.set_server_header && !config.server_value.empty()) {
+        out.append("Server: ");
+        out.append(config.server_value);
+        out.append("\r\n");
+    }
+
+    if (!seen_hsts && config.hsts_enabled && is_tls && !config.hsts_value.empty()) {
+        out.append("Strict-Transport-Security: ");
+        out.append(config.hsts_value);
+        out.append("\r\n");
+    }
+
+    if (!seen_content_type_options && config.x_content_type_options) {
+        out.append("X-Content-Type-Options: nosniff\r\n");
+    }
+
+    if (!seen_frame_options && !config.x_frame_options.empty()) {
+        out.append("X-Frame-Options: ");
+        out.append(config.x_frame_options);
+        out.append("\r\n");
+    }
+
+    for (size_t i = 0; i < config.custom_headers.size(); ++i) {
+        if (!seen_custom[i] && !config.custom_headers[i].first.empty()) {
+            out.append(config.custom_headers[i].first);
+            out.append(": ");
+            out.append(config.custom_headers[i].second);
+            out.append("\r\n");
+        }
+    }
+
+    out.append("\r\n");
+    out.append(body_part);
+    return out;
+}
+
 } // namespace helios

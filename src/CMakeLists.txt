@@ -17,6 +17,7 @@ add_library(helios_lib STATIC
     lb/least_connections.cpp
     lb/consistent_hash.cpp
     lb/health_checker.cpp
+    lb/health_check_manager.cpp
     lb/circuit_breaker.cpp
     http/http_parser.cpp
     backend/backend_pool.cpp

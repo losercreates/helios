@@ -119,3 +119,71 @@ TEST(HttpRewriterTest, PreservesWebSocketHandshakeHeaders) {
     EXPECT_NE(rewritten.find("X-Forwarded-Proto: https\r\n"), std::string::npos);
     EXPECT_NE(rewritten.find("X-Request-ID: ws-req-001\r\n"), std::string::npos);
 }
+
+TEST(HttpRewriterTest, RewriteResponse_InjectsSecurityHeaders) {
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Content-Type: text/html\r\n"
+        "Content-Length: 13\r\n"
+        "\r\n"
+        "Hello World\r\n";
+
+    ResponseHeadersConfig cfg;
+    cfg.enabled = true;
+    cfg.set_server_header = true;
+    cfg.server_value = "helios/2.0";
+    cfg.hsts_enabled = true;
+    cfg.hsts_value = "max-age=31536000; includeSubDomains";
+    cfg.x_content_type_options = true;
+    cfg.x_frame_options = "DENY";
+    cfg.custom_headers = {{"X-Custom-Env", "Production"}, {"X-Rate-Limit", "100"}};
+
+    std::string rewritten_tls = HttpRewriter::RewriteResponse(resp, cfg, true);
+    EXPECT_NE(rewritten_tls.find("Server: helios/2.0\r\n"), std::string::npos);
+    EXPECT_NE(rewritten_tls.find("Strict-Transport-Security: max-age=31536000; includeSubDomains\r\n"), std::string::npos);
+    EXPECT_NE(rewritten_tls.find("X-Content-Type-Options: nosniff\r\n"), std::string::npos);
+    EXPECT_NE(rewritten_tls.find("X-Frame-Options: DENY\r\n"), std::string::npos);
+    EXPECT_NE(rewritten_tls.find("X-Custom-Env: Production\r\n"), std::string::npos);
+    EXPECT_NE(rewritten_tls.find("X-Rate-Limit: 100\r\n"), std::string::npos);
+    EXPECT_TRUE(rewritten_tls.ends_with("Hello World\r\n"));
+
+    // When plaintext (non-TLS), HSTS should NOT be injected
+    std::string rewritten_plain = HttpRewriter::RewriteResponse(resp, cfg, false);
+    EXPECT_NE(rewritten_plain.find("Server: helios/2.0\r\n"), std::string::npos);
+    EXPECT_EQ(rewritten_plain.find("Strict-Transport-Security"), std::string::npos);
+    EXPECT_NE(rewritten_plain.find("X-Content-Type-Options: nosniff\r\n"), std::string::npos);
+    EXPECT_NE(rewritten_plain.find("X-Frame-Options: DENY\r\n"), std::string::npos);
+}
+
+TEST(HttpRewriterTest, RewriteResponse_OverridesExistingHeaders) {
+    std::string resp =
+        "HTTP/1.1 200 OK\r\n"
+        "Server: Apache/2.4\r\n"
+        "X-Frame-Options: ALLOWALL\r\n"
+        "Content-Length: 0\r\n"
+        "\r\n";
+
+    ResponseHeadersConfig cfg;
+    cfg.enabled = true;
+    cfg.set_server_header = true;
+    cfg.server_value = "helios";
+    cfg.x_frame_options = "SAMEORIGIN";
+
+    std::string rewritten = HttpRewriter::RewriteResponse(resp, cfg, false);
+    EXPECT_NE(rewritten.find("Server: helios\r\n"), std::string::npos);
+    EXPECT_EQ(rewritten.find("Server: Apache/2.4"), std::string::npos);
+    EXPECT_NE(rewritten.find("X-Frame-Options: SAMEORIGIN\r\n"), std::string::npos);
+    EXPECT_EQ(rewritten.find("X-Frame-Options: ALLOWALL"), std::string::npos);
+}
+
+TEST(HttpRewriterTest, RewriteResponse_BypassesNonHttpOrDisabled) {
+    std::string raw_binary = "\x01\x02\x03\x04\x05\x06\x07";
+    ResponseHeadersConfig cfg;
+    cfg.enabled = true;
+
+    EXPECT_EQ(HttpRewriter::RewriteResponse(raw_binary, cfg, true), raw_binary);
+
+    std::string http_resp = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n";
+    cfg.enabled = false;
+    EXPECT_EQ(HttpRewriter::RewriteResponse(http_resp, cfg, true), http_resp);
+}

@@ -4,6 +4,7 @@
 #include "metrics/prometheus_server.hpp"
 #include "metrics/metrics_collector.hpp"
 #include "logging/access_logger.hpp"
+#include "lb/health_check_manager.hpp"
 #include <iostream>
 #include <csignal>
 #include <atomic>
@@ -15,10 +16,13 @@
 namespace {
 std::atomic<bool> g_stop_signal{false};
 std::atomic<bool> g_reload_signal{false};
+std::atomic<bool> g_reopen_logs_signal{false};
 
 void SignalHandler(int signum) {
     if (signum == SIGHUP) {
         g_reload_signal.store(true, std::memory_order_release);
+    } else if (signum == SIGUSR1) {
+        g_reopen_logs_signal.store(true, std::memory_order_release);
     } else {
         g_stop_signal.store(true, std::memory_order_release);
     }
@@ -82,6 +86,7 @@ int main(int argc, char* argv[]) {
     std::signal(SIGINT, SignalHandler);
     std::signal(SIGTERM, SignalHandler);
     std::signal(SIGHUP, SignalHandler);
+    std::signal(SIGUSR1, SignalHandler);
 
     helios::HeliosConfig config;
 
@@ -164,9 +169,25 @@ int main(int argc, char* argv[]) {
         pool.SetMetricsCollector(metrics_collector);
     }
 
+    pool.SetNamedPoolsAndRoutes(config.backend_pools, config.routes, config.default_pool);
+
     for (const auto& backend_pool : config.backend_pools) {
         for (const auto& ep : backend_pool.endpoints) {
             pool.AddBackend(ep.host, ep.port, ep.weight);
+        }
+    }
+
+    std::shared_ptr<helios::HealthCheckManager> health_check_manager;
+    if (config.health_check.enabled) {
+        health_check_manager = std::make_shared<helios::HealthCheckManager>(config.health_check);
+        health_check_manager->UpdateBackends(pool.GetAllBackends());
+        if (health_check_manager->Start()) {
+            pool.SetHealthCheckManager(health_check_manager);
+            std::cout << "[HELIOS] Active Health Check Manager active ("
+                      << health_check_manager->GetActiveCheckerCount() << " backends monitored, interval="
+                      << config.health_check.interval.count() << "ms)\n";
+        } else {
+            std::cerr << "[HELIOS] Warning: Failed to start Health Check Manager.\n";
         }
     }
 
@@ -175,8 +196,21 @@ int main(int argc, char* argv[]) {
                   << pool.GetWorkerCount() << " workers on port " << pool.GetPort() << "\n";
 
         if (daemon_mode) {
-            std::cout << "[HELIOS] Running in daemon mode. Send SIGINT/SIGTERM to stop, SIGHUP to reload.\n";
+            std::cout << "[HELIOS] Running in daemon mode. Send SIGINT/SIGTERM to stop, SIGHUP to reload, SIGUSR1 to reopen logs.\n";
             while (!g_stop_signal.load(std::memory_order_relaxed)) {
+                if (g_reopen_logs_signal.exchange(false, std::memory_order_acq_rel)) {
+                    if (access_logger && access_logger->IsRunning()) {
+                        std::cout << "[HELIOS] SIGUSR1 received: Reopening log file for log rotation...\n";
+                        if (access_logger->Reopen()) {
+                            std::cout << "[HELIOS] Access log file reopened successfully: "
+                                      << access_logger->GetConfig().output << "\n";
+                        } else {
+                            std::cerr << "[HELIOS] Warning: Failed to reopen access log file: "
+                                      << access_logger->GetConfig().output << "\n";
+                        }
+                    }
+                }
+
                 if (g_reload_signal.exchange(false, std::memory_order_acq_rel)) {
                     if (config_path.empty()) {
                         std::cerr << "[HELIOS] Reload ignored: No configuration file specified (running with defaults).\n";
@@ -187,14 +221,7 @@ int main(int argc, char* argv[]) {
                             std::cerr << "[HELIOS] Configuration reload failed: " << res.error_message
                                       << " - Retaining current configuration.\n";
                         } else {
-                            std::vector<helios::WorkerPool::BackendInfo> new_endpoints;
-                            for (const auto& pool_cfg : res.config.backend_pools) {
-                                for (const auto& ep : pool_cfg.endpoints) {
-                                    new_endpoints.push_back({ep.host, ep.port, ep.weight});
-                                }
-                            }
-
-                            pool.ReloadBackends(new_endpoints);
+                            pool.ReloadNamedPoolsAndRoutes(res.config.backend_pools, res.config.routes, res.config.default_pool);
                             pool.ReloadSecurity(res.config.security);
                             if (res.config.tls.enabled) {
                                 std::string tls_err;
@@ -205,9 +232,26 @@ int main(int argc, char* argv[]) {
                                     std::cout << "[HELIOS] TLS certificates and security configuration reloaded successfully.\n";
                                 }
                             }
+                            if (res.config.health_check.enabled) {
+                                if (!health_check_manager) {
+                                    health_check_manager = std::make_shared<helios::HealthCheckManager>(res.config.health_check);
+                                    health_check_manager->UpdateBackends(pool.GetAllBackends());
+                                    if (health_check_manager->Start()) {
+                                        pool.SetHealthCheckManager(health_check_manager);
+                                    }
+                                } else {
+                                    health_check_manager->SetConfig(res.config.health_check);
+                                    health_check_manager->UpdateBackends(pool.GetAllBackends());
+                                }
+                            } else if (health_check_manager && health_check_manager->IsRunning()) {
+                                health_check_manager->Stop();
+                                health_check_manager.reset();
+                                pool.SetHealthCheckManager(nullptr);
+                            }
                             config = std::move(res.config);
                             std::cout << "[HELIOS] Configuration reloaded successfully ("
-                                      << new_endpoints.size() << " backend endpoint(s) active).\n";
+                                      << pool.GetAllBackends().size() << " backend endpoint(s) active across "
+                                      << config.backend_pools.size() << " pool(s)).\n";
                         }
                     }
                 }
@@ -216,6 +260,10 @@ int main(int argc, char* argv[]) {
         } else {
             // Self-validation run (e.g. for startup integration tests)
             std::this_thread::sleep_for(std::chrono::milliseconds(10));
+        }
+
+        if (health_check_manager && health_check_manager->IsRunning()) {
+            health_check_manager->Stop();
         }
 
         std::cout << "[HELIOS] Initiating graceful draining on all workers...\n";

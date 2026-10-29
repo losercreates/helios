@@ -58,20 +58,6 @@ struct ServerConfig {
 
 #include "backend/backend_pool.hpp"
 
-struct BackendEndpointConfig {
-    std::string host{"127.0.0.1"};
-    uint16_t port{9001};
-    uint32_t weight{1};
-};
-
-struct BackendPoolConfig {
-    std::string name{"default_pool"};
-    std::string algorithm{"round_robin"};
-    std::vector<BackendEndpointConfig> endpoints;
-    bool enable_connection_pool{false};
-    BackendConnectionPoolConfig connection_pool_config{};
-};
-
 struct TimeoutsConfig {
     std::chrono::milliseconds idle_timeout{30000};
     std::chrono::milliseconds header_read_timeout{5000};

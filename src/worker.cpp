@@ -1,10 +1,12 @@
 #include "worker.hpp"
+#include "lb/health_check_manager.hpp"
 #include <pthread.h>
 #include <sched.h>
 #include <sys/eventfd.h>
 #include <unistd.h>
 #include <future>
 #include <algorithm>
+#include <unordered_set>
 
 namespace helios {
 
@@ -197,8 +199,40 @@ WorkerPool::~WorkerPool() {
 
 void WorkerPool::AddBackend(std::string host, uint16_t port, uint32_t weight) {
     initial_backends_.emplace_back(host, port, weight);
+    std::string key = host + ":" + std::to_string(port);
+    std::shared_ptr<Backend> b;
+    {
+        std::lock_guard<std::mutex> lock(backend_cache_mutex_);
+        auto it = backend_cache_.find(key);
+        if (it != backend_cache_.end()) {
+            b = it->second;
+            b->SetWeight(weight);
+        } else {
+            b = std::make_shared<Backend>(next_backend_id_++, host, port, weight);
+            backend_cache_[key] = b;
+        }
+    }
     for (auto& w : workers_) {
-        w->AddBackend(host, port, weight);
+        w->AddBackend(b);
+    }
+    if (health_check_manager_) {
+        health_check_manager_->RegisterBackend(b);
+    }
+}
+
+void WorkerPool::AddBackend(std::shared_ptr<Backend> backend) {
+    if (!backend) return;
+    initial_backends_.emplace_back(backend->GetHost(), backend->GetPort(), backend->GetWeight());
+    std::string key = backend->GetHost() + ":" + std::to_string(backend->GetPort());
+    {
+        std::lock_guard<std::mutex> lock(backend_cache_mutex_);
+        backend_cache_[key] = backend;
+    }
+    for (auto& w : workers_) {
+        w->AddBackend(backend);
+    }
+    if (health_check_manager_) {
+        health_check_manager_->RegisterBackend(backend);
     }
 }
 
@@ -222,6 +256,29 @@ void WorkerPool::ReloadBackends(const std::vector<BackendInfo>& new_backends) {
     initial_backends_.clear();
     for (const auto& b : new_backends) {
         initial_backends_.emplace_back(b.host, b.port, b.weight);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(backend_cache_mutex_);
+        std::unordered_set<std::string> active_keys;
+        for (const auto& ep : new_backends) {
+            std::string key = ep.host + ":" + std::to_string(ep.port);
+            active_keys.insert(key);
+            auto it = backend_cache_.find(key);
+            if (it != backend_cache_.end()) {
+                it->second->SetWeight(ep.weight);
+            } else {
+                backend_cache_[key] = std::make_shared<Backend>(next_backend_id_++, ep.host, ep.port, ep.weight);
+            }
+        }
+        for (auto it = backend_cache_.begin(); it != backend_cache_.end();) {
+            if (active_keys.find(it->first) == active_keys.end()) {
+                it->second->SetDraining(true);
+                it = backend_cache_.erase(it);
+            } else {
+                ++it;
+            }
+        }
     }
 
     if (workers_.empty()) return;
@@ -279,6 +336,100 @@ void WorkerPool::ReloadBackends(const std::vector<BackendInfo>& new_backends) {
             f.wait_for(std::chrono::seconds(2));
         }
     }
+
+    if (health_check_manager_) {
+        health_check_manager_->UpdateBackends(GetAllBackends());
+    }
+}
+
+void WorkerPool::SetNamedPoolsAndRoutes(
+    const std::vector<BackendPoolConfig>& pools,
+    const std::vector<L7RouteConfig>& routes,
+    const std::string& default_pool) {
+
+    initial_pools_ = pools;
+    initial_routes_ = routes;
+    initial_default_pool_ = default_pool;
+
+    std::lock_guard<std::mutex> lock(backend_cache_mutex_);
+    for (const auto& p : pools) {
+        for (const auto& ep : p.endpoints) {
+            std::string key = ep.host + ":" + std::to_string(ep.port);
+            if (backend_cache_.find(key) == backend_cache_.end()) {
+                backend_cache_[key] = std::make_shared<Backend>(next_backend_id_++, ep.host, ep.port, ep.weight);
+            }
+        }
+    }
+}
+
+void WorkerPool::ReloadNamedPoolsAndRoutes(
+    const std::vector<BackendPoolConfig>& pools,
+    const std::vector<L7RouteConfig>& routes,
+    const std::string& default_pool) {
+
+    initial_pools_ = pools;
+    initial_routes_ = routes;
+    initial_default_pool_ = default_pool;
+
+    {
+        std::lock_guard<std::mutex> lock(backend_cache_mutex_);
+        std::unordered_set<std::string> active_keys;
+        for (const auto& p : pools) {
+            for (const auto& ep : p.endpoints) {
+                std::string key = ep.host + ":" + std::to_string(ep.port);
+                active_keys.insert(key);
+                auto it = backend_cache_.find(key);
+                if (it != backend_cache_.end()) {
+                    it->second->SetWeight(ep.weight);
+                } else {
+                    backend_cache_[key] = std::make_shared<Backend>(next_backend_id_++, ep.host, ep.port, ep.weight);
+                }
+            }
+        }
+        for (auto it = backend_cache_.begin(); it != backend_cache_.end();) {
+            if (active_keys.find(it->first) == active_keys.end()) {
+                it->second->SetDraining(true);
+                it = backend_cache_.erase(it);
+            } else {
+                ++it;
+            }
+        }
+    }
+
+    if (workers_.empty()) return;
+
+    std::vector<std::future<void>> futures;
+    futures.reserve(workers_.size());
+
+    for (auto& worker : workers_) {
+        auto promise = std::make_shared<std::promise<void>>();
+        futures.push_back(promise->get_future());
+
+        worker->Post([w = worker.get(), pools, routes, default_pool, p = promise]() {
+            w->GetProxy().ReloadNamedPoolsAndRoutes(pools, routes, default_pool);
+            p->set_value();
+        });
+    }
+
+    for (auto& f : futures) {
+        if (f.valid()) {
+            f.wait_for(std::chrono::seconds(2));
+        }
+    }
+
+    if (health_check_manager_) {
+        health_check_manager_->UpdateBackends(GetAllBackends());
+    }
+}
+
+std::vector<std::shared_ptr<Backend>> WorkerPool::GetAllBackends() const {
+    std::lock_guard<std::mutex> lock(backend_cache_mutex_);
+    std::vector<std::shared_ptr<Backend>> backends;
+    backends.reserve(backend_cache_.size());
+    for (const auto& [_, b] : backend_cache_) {
+        if (b) backends.push_back(b);
+    }
+    return backends;
 }
 
 void WorkerPool::SetAcl(std::shared_ptr<IpAcl> acl) {
@@ -328,6 +479,12 @@ void WorkerPool::ReloadSecurity(const SecurityConfig& security) {
         }
     } else if (rate_limiter_) {
         rate_limiter_->SetEnabled(false);
+    }
+
+    for (auto& w : workers_) {
+        w->Post([worker = w.get(), security]() {
+            worker->GetProxy().ReloadSecurityConfig(security);
+        });
     }
 }
 
@@ -414,7 +571,7 @@ bool WorkerPool::Start() {
         wcfg.proxy_config.connection_pool_config = config_.connection_pool_config;
         wcfg.proxy_config.header_read_timeout = config_.header_read_timeout;
         wcfg.proxy_config.enable_tls = config_.tls.enabled;
-        wcfg.proxy_config.enable_l7_routing = config_.tls.enabled;
+        wcfg.proxy_config.enable_l7_routing = config_.tls.enabled || !initial_routes_.empty() || !initial_default_pool_.empty();
         wcfg.proxy_config.tls_config = config_.tls;
 
         auto worker = std::make_unique<Worker>(wcfg.worker_id, wcfg.core_id, std::move(wcfg));
@@ -433,8 +590,12 @@ bool WorkerPool::Start() {
         if (tls_context_) {
             worker->GetProxy().SetTlsContext(tls_context_);
         }
+        worker->GetProxy().ReloadSecurityConfig(config_.security);
         for (const auto& [host, port, weight] : initial_backends_) {
             worker->AddBackend(host, port, weight);
+        }
+        if (!initial_pools_.empty() || !initial_routes_.empty() || !initial_default_pool_.empty()) {
+            worker->GetProxy().ReloadNamedPoolsAndRoutes(initial_pools_, initial_routes_, initial_default_pool_);
         }
         if (config_.tls.enabled && worker->GetProxy().GetRouter().GetDefaultPool().empty()) {
             worker->GetProxy().SetDefaultPool("default");

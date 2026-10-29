@@ -30,10 +30,22 @@ struct SlowlorisConfig {
     std::chrono::milliseconds header_read_timeout{5000};
 };
 
+struct ResponseHeadersConfig {
+    bool enabled{false};
+    bool set_server_header{true};
+    std::string server_value{"helios"};
+    bool hsts_enabled{false};
+    std::string hsts_value{"max-age=31536000; includeSubDomains"};
+    bool x_content_type_options{true}; // "nosniff"
+    std::string x_frame_options{"SAMEORIGIN"}; // "DENY", "SAMEORIGIN", etc.
+    std::vector<std::pair<std::string, std::string>> custom_headers;
+};
+
 struct SecurityConfig {
     AclConfig acl;
     RateLimitConfig rate_limit;
     SlowlorisConfig slowloris;
+    ResponseHeadersConfig headers;
 };
 
 } // namespace helios

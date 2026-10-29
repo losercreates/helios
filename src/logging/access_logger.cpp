@@ -19,6 +19,7 @@ bool AccessLogger::Start() {
     if (running_.load(std::memory_order_acquire)) return true;
 
     if (!config_.output.empty() && config_.output != "stdout" && config_.output != "stderr") {
+        std::lock_guard<std::mutex> lock(output_mutex_);
         file_stream_.open(config_.output, std::ios::out | std::ios::app);
         if (!file_stream_.is_open()) {
             std::cerr << "[HELIOS] Warning: Failed to open access log file: " << config_.output
@@ -64,12 +65,32 @@ void AccessLogger::Stop() {
         WriteBuffer(buffer);
     }
 
+    {
+        std::lock_guard<std::mutex> lock(output_mutex_);
+        if (file_stream_.is_open()) {
+            file_stream_.flush();
+            file_stream_.close();
+        }
+    }
+
+    running_.store(false, std::memory_order_release);
+}
+
+bool AccessLogger::Reopen(const std::string& new_path) {
+    std::lock_guard<std::mutex> lock(output_mutex_);
+    if (!new_path.empty()) {
+        config_.output = new_path;
+    }
+    if (config_.output.empty() || config_.output == "stdout" || config_.output == "stderr") {
+        return true;
+    }
     if (file_stream_.is_open()) {
         file_stream_.flush();
         file_stream_.close();
     }
-
-    running_.store(false, std::memory_order_release);
+    file_stream_.clear();
+    file_stream_.open(config_.output, std::ios::out | std::ios::app);
+    return file_stream_.is_open();
 }
 
 void AccessLogger::Log(AccessLogEntry entry) {
@@ -121,6 +142,7 @@ void AccessLogger::FlushLoop() {
 void AccessLogger::WriteBuffer(const std::string& data) {
     if (data.empty()) return;
 
+    std::lock_guard<std::mutex> lock(output_mutex_);
     if (config_.output == "stdout") {
         std::cout << data;
         std::cout.flush();

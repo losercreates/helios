@@ -95,13 +95,19 @@ public:
 
     // Load balancer configuration
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
+    void AddBackend(std::shared_ptr<Backend> backend);
     LoadBalancer& GetLoadBalancer() noexcept { return *lb_; }
 
     // Named pool and L7 route management
     void AddNamedPool(std::string name, std::string algorithm = "round_robin", bool enable_pool = false, BackendConnectionPoolConfig pool_cfg = {});
     void AddBackendToNamedPool(const std::string& pool_name, std::string host, uint16_t port, uint32_t weight = 1);
+    void AddBackendToNamedPool(const std::string& pool_name, std::shared_ptr<Backend> backend);
     void AddRoute(L7RouteConfig route);
     void SetDefaultPool(std::string pool_name);
+    void ReloadNamedPoolsAndRoutes(const std::vector<BackendPoolConfig>& pools,
+                                   const std::vector<L7RouteConfig>& routes,
+                                   const std::string& default_pool);
+    void ReloadSecurityConfig(const SecurityConfig& security);
     [[nodiscard]] L7Router& GetRouter() noexcept { return router_; }
     [[nodiscard]] const L7Router& GetRouter() const noexcept { return router_; }
     [[nodiscard]] const std::unordered_map<std::string, NamedPool>& GetNamedPools() const noexcept { return named_pools_; }

@@ -2,6 +2,7 @@
 
 #include "net/l4_proxy_server.hpp"
 #include "tls/tls_context.hpp"
+#include "routing/l7_route.hpp"
 #include <cstdint>
 #include <string>
 #include <thread>
@@ -12,8 +13,11 @@
 #include <chrono>
 #include <functional>
 #include <mutex>
+#include <unordered_map>
 
 namespace helios {
+
+class HealthCheckManager;
 
 struct WorkerConfig {
     uint32_t worker_id{0};
@@ -56,6 +60,10 @@ public:
     void Join();
 
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
+    void AddBackend(std::shared_ptr<Backend> backend) { proxy_.AddBackend(std::move(backend)); }
+    void AddBackendToNamedPool(const std::string& pool_name, std::shared_ptr<Backend> backend) {
+        proxy_.AddBackendToNamedPool(pool_name, std::move(backend));
+    }
     void SetListenPort(uint16_t port) noexcept;
     void Post(std::function<void()> task);
     void SetAccessLogger(std::shared_ptr<AccessLogger> logger) noexcept { proxy_.SetAccessLogger(std::move(logger)); }
@@ -113,7 +121,22 @@ public:
     WorkerPool& operator=(const WorkerPool&) = delete;
 
     void AddBackend(std::string host, uint16_t port, uint32_t weight = 1);
+    void AddBackend(std::shared_ptr<Backend> backend);
     void ReloadBackends(const std::vector<BackendInfo>& new_backends);
+    void SetNamedPoolsAndRoutes(const std::vector<BackendPoolConfig>& pools,
+                                const std::vector<L7RouteConfig>& routes,
+                                const std::string& default_pool);
+    void ReloadNamedPoolsAndRoutes(const std::vector<BackendPoolConfig>& pools,
+                                   const std::vector<L7RouteConfig>& routes,
+                                   const std::string& default_pool);
+    [[nodiscard]] std::vector<std::shared_ptr<Backend>> GetAllBackends() const;
+
+    void SetHealthCheckManager(std::shared_ptr<HealthCheckManager> manager) noexcept {
+        health_check_manager_ = std::move(manager);
+    }
+    [[nodiscard]] std::shared_ptr<HealthCheckManager> GetHealthCheckManager() const noexcept {
+        return health_check_manager_;
+    }
     void SetAccessLogger(std::shared_ptr<AccessLogger> logger);
     [[nodiscard]] std::shared_ptr<AccessLogger> GetAccessLogger() const noexcept { return access_logger_; }
     void SetMetricsCollector(std::shared_ptr<MetricsCollector> collector);
@@ -151,6 +174,13 @@ private:
     std::shared_ptr<IpAcl> acl_;
     std::shared_ptr<RateLimiter> rate_limiter_;
     std::shared_ptr<TlsContext> tls_context_;
+    std::shared_ptr<HealthCheckManager> health_check_manager_;
+    std::vector<BackendPoolConfig> initial_pools_;
+    std::vector<L7RouteConfig> initial_routes_;
+    std::string initial_default_pool_;
+    mutable std::mutex backend_cache_mutex_;
+    std::unordered_map<std::string, std::shared_ptr<Backend>> backend_cache_;
+    uint32_t next_backend_id_{1};
     std::atomic<bool> running_{false};
 };
 

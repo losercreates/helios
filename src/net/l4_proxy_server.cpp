@@ -8,8 +8,10 @@
 #include <array>
 #include <vector>
 #include <algorithm>
+#include <unordered_set>
 #include <iostream>
 #include <cstring>
+#include "http/http_rewriter.hpp"
 #include "lb/weighted_round_robin.hpp"
 #include "lb/least_connections.hpp"
 #include "lb/consistent_hash.hpp"
@@ -77,6 +79,12 @@ void L4ProxyServer::AddBackend(std::string host, uint16_t port, uint32_t weight)
     lb_->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port, weight));
 }
 
+void L4ProxyServer::AddBackend(std::shared_ptr<Backend> backend) {
+    if (backend && lb_) {
+        lb_->AddBackend(std::move(backend));
+    }
+}
+
 void L4ProxyServer::AddNamedPool(std::string name, std::string algorithm, bool enable_pool, BackendConnectionPoolConfig pool_cfg) {
     NamedPool np;
     np.name = name;
@@ -100,6 +108,144 @@ void L4ProxyServer::AddBackendToNamedPool(const std::string& pool_name, std::str
     auto it = named_pools_.find(pool_name);
     if (it != named_pools_.end() && it->second.lb) {
         it->second.lb->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port, weight));
+    }
+}
+
+void L4ProxyServer::AddBackendToNamedPool(const std::string& pool_name, std::shared_ptr<Backend> backend) {
+    if (!backend) return;
+    auto it = named_pools_.find(pool_name);
+    if (it != named_pools_.end() && it->second.lb) {
+        it->second.lb->AddBackend(std::move(backend));
+    }
+}
+
+void L4ProxyServer::ReloadSecurityConfig(const SecurityConfig& security) {
+    config_.security = security;
+}
+
+void L4ProxyServer::ReloadNamedPoolsAndRoutes(
+    const std::vector<BackendPoolConfig>& pools,
+    const std::vector<L7RouteConfig>& routes,
+    const std::string& default_pool) {
+
+    // 1. Update Routes and Default Pool
+    router_.ClearRoutes();
+    for (const auto& r : routes) {
+        router_.AddRoute(r);
+    }
+    router_.SetDefaultPool(default_pool);
+    config_.routes = routes;
+    config_.default_pool = default_pool;
+    config_.enable_l7_routing = !routes.empty() || !default_pool.empty();
+
+    // 2. Identify and update named pools
+    std::unordered_set<std::string> new_pool_names;
+    for (const auto& p : pools) {
+        new_pool_names.insert(p.name);
+    }
+
+    for (auto it = named_pools_.begin(); it != named_pools_.end();) {
+        if (new_pool_names.find(it->first) == new_pool_names.end()) {
+            if (it->second.lb) {
+                for (auto& b : it->second.lb->GetAllBackends()) {
+                    if (b) b->SetDraining(true);
+                }
+            }
+            it = named_pools_.erase(it);
+        } else {
+            ++it;
+        }
+    }
+
+    for (const auto& p : pools) {
+        auto it = named_pools_.find(p.name);
+        if (it == named_pools_.end() || it->second.algorithm != p.algorithm) {
+            AddNamedPool(p.name, p.algorithm, p.enable_connection_pool, p.connection_pool_config);
+            for (const auto& ep : p.endpoints) {
+                AddBackendToNamedPool(p.name, ep.host, ep.port, ep.weight);
+            }
+        } else {
+            auto& lb = it->second.lb;
+            auto existing = lb->GetAllBackends();
+
+            for (const auto& b : existing) {
+                if (!b) continue;
+                bool found = false;
+                for (const auto& ep : p.endpoints) {
+                    if (b->GetHost() == ep.host && b->GetPort() == ep.port) {
+                        found = true;
+                        break;
+                    }
+                }
+                if (!found) {
+                    b->SetDraining(true);
+                    lb->RemoveBackend(b->GetId());
+                }
+            }
+
+            for (const auto& ep : p.endpoints) {
+                bool found = false;
+                for (const auto& b : existing) {
+                    if (b && b->GetHost() == ep.host && b->GetPort() == ep.port) {
+                        found = true;
+                        if (b->GetWeight() != ep.weight) {
+                            b->SetWeight(ep.weight);
+                        }
+                        break;
+                    }
+                }
+                if (!found) {
+                    AddBackendToNamedPool(p.name, ep.host, ep.port, ep.weight);
+                }
+            }
+        }
+    }
+
+    // 3. Update default load balancer (lb_)
+    const BackendPoolConfig* def_pool_cfg = nullptr;
+    if (!default_pool.empty()) {
+        for (const auto& p : pools) {
+            if (p.name == default_pool) {
+                def_pool_cfg = &p;
+                break;
+            }
+        }
+    }
+    if (!def_pool_cfg && !pools.empty()) {
+        def_pool_cfg = &pools[0];
+    }
+
+    if (def_pool_cfg && lb_) {
+        auto existing = lb_->GetAllBackends();
+        for (const auto& b : existing) {
+            if (!b) continue;
+            bool found = false;
+            for (const auto& ep : def_pool_cfg->endpoints) {
+                if (b->GetHost() == ep.host && b->GetPort() == ep.port) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                b->SetDraining(true);
+                lb_->RemoveBackend(b->GetId());
+            }
+        }
+        for (const auto& ep : def_pool_cfg->endpoints) {
+            bool found = false;
+            for (const auto& b : existing) {
+                if (b && b->GetHost() == ep.host && b->GetPort() == ep.port) {
+                    found = true;
+                    if (b->GetWeight() != ep.weight) {
+                        b->SetWeight(ep.weight);
+                    }
+                    break;
+                }
+            }
+            if (!found) {
+                AddBackend(ep.host, ep.port, ep.weight);
+            }
+        }
     }
 }
 
@@ -1258,6 +1404,7 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
                 metrics_->bytes_written_total.fetch_add(static_cast<uint64_t>(event.result), std::memory_order_relaxed);
             }
             conn->Touch();
+            size_t payload_len = static_cast<size_t>(event.result);
             if (!data.parsed_response) {
                 data.parsed_response = true;
                 std::string_view resp(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
@@ -1274,6 +1421,14 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
                             data.status_code = code;
                         }
                     }
+
+                    if (config_.security.headers.enabled) {
+                        std::string rewritten = HttpRewriter::RewriteResponse(resp, config_.security.headers, data.tls_stream != nullptr);
+                        if (rewritten.size() <= buf->capacity) {
+                            std::memcpy(buf->data, rewritten.data(), rewritten.size());
+                            payload_len = rewritten.size();
+                        }
+                    }
                 }
                 if (data.is_websocket && data.status_code == 101) {
                     data.websocket_upgraded = true;
@@ -1287,7 +1442,7 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
 
             if (data.tls_stream) {
                 std::vector<uint8_t> cipher;
-                std::span<const uint8_t> plain(buf->data, static_cast<size_t>(event.result));
+                std::span<const uint8_t> plain(buf->data, payload_len);
                 auto enc_res = data.tls_stream->Encrypt(plain, cipher);
                 if (enc_res.error) {
                     buffer_pool_.Release(buf);
@@ -1300,7 +1455,7 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
                 std::memcpy(buf->data, cipher.data(), to_write);
                 buf->AdvanceWrite(to_write);
             } else {
-                buf->AdvanceWrite(static_cast<size_t>(event.result));
+                buf->AdvanceWrite(payload_len);
             }
 
             data.client_write_ctx.buf = buf;

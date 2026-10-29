@@ -54,6 +54,7 @@ public:
 
     bool Start();
     void Stop();
+    bool Reopen(const std::string& new_path = "");
 
     // Hot-path non-blocking push from worker threads
     void Log(AccessLogEntry entry);
@@ -84,6 +85,7 @@ private:
     std::atomic<uint64_t> total_dropped_{0};
 
     std::thread worker_thread_;
+    std::mutex output_mutex_;
     std::ofstream file_stream_;
 };
 

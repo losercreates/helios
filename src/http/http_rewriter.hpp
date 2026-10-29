@@ -3,6 +3,7 @@
 #include <string>
 #include <string_view>
 #include <optional>
+#include "security/security_config.hpp"
 
 namespace helios {
 
@@ -27,6 +28,12 @@ public:
     // Rewrites request line if rewritten_path is provided, and injects X-Forwarded-* headers
     static std::string RewriteRequest(std::string_view raw_request,
                                       const HeaderInjectionOptions& options);
+
+    // Injects/rewrites downstream HTTP response security headers (HSTS, X-Content-Type-Options,
+    // X-Frame-Options, Server, custom headers)
+    static std::string RewriteResponse(std::string_view raw_response,
+                                       const ResponseHeadersConfig& config,
+                                       bool is_tls = false);
 };
 
 } // namespace helios
