@@ -31,6 +31,9 @@ struct AccessLogEntry {
     uint64_t bytes_received{0};
     std::chrono::microseconds duration_us{0};
     std::string upstream_endpoint;
+    std::chrono::microseconds upstream_duration_us{0};
+    std::string matched_pool;
+    std::string request_id;
 };
 
 struct AccessLoggerConfig {

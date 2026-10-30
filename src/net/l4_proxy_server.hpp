@@ -144,6 +144,7 @@ public:
     void DisableConnectionPooling() noexcept;
     [[nodiscard]] BackendConnectionPool* GetBackendPool() noexcept { return backend_pool_.get(); }
     [[nodiscard]] const BackendConnectionPool* GetBackendPool() const noexcept { return backend_pool_.get(); }
+    void PurgeBackend(uint32_t backend_id);
 
     void SetAcl(std::shared_ptr<IpAcl> acl) noexcept {
         std::lock_guard lock(security_mutex_);
@@ -211,9 +212,12 @@ private:
 
         std::chrono::steady_clock::time_point start_time{std::chrono::steady_clock::now()};
         std::chrono::system_clock::time_point wall_start_time{std::chrono::system_clock::now()};
+        std::chrono::steady_clock::time_point backend_request_time{};
+        std::chrono::microseconds upstream_duration_us{0};
         std::string client_ip{"127.0.0.1"};
         uint16_t client_port{0};
         std::string upstream_endpoint;
+        std::string request_id;
         std::string method{"TCP"};
         std::string uri{"/"};
         std::string http_version{"TCP"};
@@ -257,6 +261,9 @@ private:
                 entry.bytes_received = bytes_received;
                 entry.duration_us = duration_us;
                 entry.upstream_endpoint = std::move(upstream_endpoint);
+                entry.upstream_duration_us = upstream_duration_us;
+                entry.matched_pool = std::move(matched_pool);
+                entry.request_id = std::move(request_id);
                 access_logger->Log(std::move(entry));
             }
         }
@@ -314,6 +321,7 @@ private:
 
     L7Router router_;
     std::unordered_map<std::string, NamedPool> named_pools_;
+    mutable std::recursive_mutex pools_mutex_;
     mutable std::mutex security_mutex_;
     std::shared_ptr<IpAcl> acl_;
     std::shared_ptr<RateLimiter> rate_limiter_;

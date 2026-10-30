@@ -245,11 +245,67 @@ void WorkerPool::SetAccessLogger(std::shared_ptr<AccessLogger> logger) {
 
 void WorkerPool::SetMetricsCollector(std::shared_ptr<MetricsCollector> collector) {
     metrics_collector_ = std::move(collector);
+    if (metrics_collector_) {
+        metrics_collector_->SetBackendHealthProvider([this]() {
+            return GetBackendMetricInfos();
+        });
+        if (health_check_manager_) {
+            health_check_manager_->SetMetricsCollector(metrics_collector_);
+        }
+    }
     for (size_t i = 0; i < workers_.size(); ++i) {
         if (metrics_collector_) {
             workers_[i]->SetMetrics(metrics_collector_->GetOrCreateWorkerMetrics(static_cast<uint32_t>(i)));
         }
     }
+}
+
+void WorkerPool::SetHealthCheckManager(std::shared_ptr<HealthCheckManager> manager) {
+    health_check_manager_ = std::move(manager);
+    if (health_check_manager_) {
+        if (metrics_collector_) {
+            health_check_manager_->SetMetricsCollector(metrics_collector_);
+        }
+        health_check_manager_->SetOnBackendUnhealthyCallback([this](uint32_t backend_id) {
+            PurgeBackendConnections(backend_id);
+        });
+    }
+}
+
+void WorkerPool::PurgeBackendConnections(uint32_t backend_id) {
+    for (auto& w : workers_) {
+        if (w) {
+            w->GetProxy().PurgeBackend(backend_id);
+        }
+    }
+}
+
+std::vector<BackendMetricInfo> WorkerPool::GetBackendMetricInfos() const {
+    std::lock_guard<std::mutex> lock(backend_cache_mutex_);
+    std::unordered_map<std::string, std::string> endpoint_to_pool;
+    for (const auto& p : initial_pools_) {
+        for (const auto& ep : p.endpoints) {
+            endpoint_to_pool[ep.host + ":" + std::to_string(ep.port)] = p.name;
+        }
+    }
+    std::string def_pool = initial_default_pool_.empty() ? "default" : initial_default_pool_;
+
+    std::vector<BackendMetricInfo> result;
+    result.reserve(backend_cache_.size());
+    for (const auto& [key, b] : backend_cache_) {
+        if (!b) continue;
+        std::string pool_name = def_pool;
+        auto it = endpoint_to_pool.find(key);
+        if (it != endpoint_to_pool.end()) {
+            pool_name = it->second;
+        }
+        result.push_back(BackendMetricInfo{
+            .endpoint = key,
+            .pool = std::move(pool_name),
+            .backend = b
+        });
+    }
+    return result;
 }
 
 void WorkerPool::ReloadBackends(const std::vector<BackendInfo>& new_backends) {

@@ -18,6 +18,36 @@ TEST(TcpNetUnitTest, SocketUtilsAddressParsing) {
     EXPECT_FALSE(SocketUtils::ParseSockAddr("invalid_ip_address", 80, &addr));
 }
 
+TEST(TcpNetUnitTest, SocketUtilsTcpKeepAlive) {
+    int fd = SocketUtils::CreateTcpSocket();
+    ASSERT_GE(fd, 0);
+
+    EXPECT_TRUE(SocketUtils::SetTcpKeepAlive(fd, 45, 5, 2));
+
+    int val = 0;
+    socklen_t len = sizeof(val);
+    EXPECT_EQ(::getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &val, &len), 0);
+    EXPECT_EQ(val, 1);
+
+#ifdef TCP_KEEPIDLE
+    val = 0;
+    EXPECT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &val, &len), 0);
+    EXPECT_EQ(val, 45);
+#endif
+#ifdef TCP_KEEPINTVL
+    val = 0;
+    EXPECT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &val, &len), 0);
+    EXPECT_EQ(val, 5);
+#endif
+#ifdef TCP_KEEPCNT
+    val = 0;
+    EXPECT_EQ(::getsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &val, &len), 0);
+    EXPECT_EQ(val, 2);
+#endif
+
+    ::close(fd);
+}
+
 TEST(TcpNetUnitTest, ListenerLifecycle) {
     RingEngine engine(64);
     TcpListener listener(engine);

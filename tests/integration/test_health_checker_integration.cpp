@@ -742,3 +742,142 @@ TEST_F(HealthCheckerIntegrationTest, ShutdownDuringOutstandingProxyHealthCheck) 
     EXPECT_EQ(proxy.GetBufferPool().CheckedOutCount(), 0u);
     EXPECT_EQ(proxy.GetBufferPool().FreeCount(), proxy.GetBufferPool().TotalBuffers());
 }
+
+// 16. HTTP health check probing and automatic failover
+TEST_F(HealthCheckerIntegrationTest, HttpHealthCheckProbingAndAutomaticFailover) {
+    class HttpProbeBackend {
+    public:
+        explicit HttpProbeBackend(int code = 200) : code_(code) {}
+        ~HttpProbeBackend() { Stop(); }
+
+        bool Start() {
+            if (running_.load()) return true;
+            int fd = ::socket(AF_INET, SOCK_STREAM, 0);
+            if (fd < 0) return false;
+            int opt = 1;
+            setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+            setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+            sockaddr_in addr{};
+            addr.sin_family = AF_INET;
+            addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+            addr.sin_port = 0;
+            if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) < 0) {
+                close(fd);
+                return false;
+            }
+            socklen_t len = sizeof(addr);
+            getsockname(fd, reinterpret_cast<sockaddr*>(&addr), &len);
+            port_ = ntohs(addr.sin_port);
+
+            struct timeval tv{0, 20000};
+            setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, &tv, sizeof(tv));
+            listen(fd, 64);
+            listen_fd_.store(fd);
+            running_.store(true);
+            thread_ = std::thread([this]() {
+                while (running_.load()) {
+                    int lfd = listen_fd_.load();
+                    if (lfd < 0) break;
+                    sockaddr_in caddr{};
+                    socklen_t clen = sizeof(caddr);
+                    int cfd = accept(lfd, reinterpret_cast<sockaddr*>(&caddr), &clen);
+                    if (cfd < 0) continue;
+                    char buf[512];
+                    recv(cfd, buf, sizeof(buf) - 1, 0);
+                    int c = code_.load();
+                    std::string resp = (c == 200) ? "HTTP/1.1 200 OK\r\nContent-Length: 2\r\nConnection: close\r\n\r\nOK"
+                                                  : "HTTP/1.1 500 Error\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
+                    send(cfd, resp.data(), resp.size(), 0);
+                    close(cfd);
+                }
+            });
+            return true;
+        }
+
+        void Stop() {
+            if (running_.exchange(false)) {
+                int fd = listen_fd_.exchange(-1);
+                if (fd >= 0) {
+                    shutdown(fd, SHUT_RDWR);
+                    close(fd);
+                }
+                if (thread_.joinable()) thread_.join();
+            }
+        }
+
+        void SetCode(int code) { code_.store(code); }
+        [[nodiscard]] uint16_t GetPort() const noexcept { return port_; }
+
+    private:
+        std::atomic<int> listen_fd_{-1};
+        uint16_t port_{0};
+        std::atomic<bool> running_{false};
+        std::atomic<int> code_{200};
+        std::thread thread_;
+    };
+
+    HttpProbeBackend b1(200);
+    ASSERT_TRUE(b1.Start());
+
+    RingEngine engine(64);
+    auto backend1 = std::make_shared<Backend>(1, "127.0.0.1", b1.GetPort(), 1);
+    backend1->SetHealthThresholds(2, 1);
+
+    HealthChecker hc1(engine, backend1, 20ms, 40ms, HealthCheckType::Http, "/healthz", 200);
+    hc1.Start();
+
+    // Verify b1 initially probes as healthy
+    auto start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < 1000ms) {
+        engine.ProcessCompletions();
+        engine.Submit();
+        if (backend1->GetHealthState() == HealthState::Healthy) break;
+        std::this_thread::sleep_for(2ms);
+    }
+    EXPECT_EQ(backend1->GetHealthState(), HealthState::Healthy);
+
+    // Now make b1 return 500 -> probe should fail and transition backend to Unhealthy
+    b1.SetCode(500);
+    start = std::chrono::steady_clock::now();
+    while (std::chrono::steady_clock::now() - start < 2000ms) {
+        engine.ProcessCompletions();
+        engine.Submit();
+        if (backend1->GetHealthState() == HealthState::Unhealthy) break;
+        std::this_thread::sleep_for(2ms);
+    }
+    EXPECT_EQ(backend1->GetHealthState(), HealthState::Unhealthy);
+    EXPECT_FALSE(backend1->IsEligible());
+
+    hc1.Stop();
+    RunEngineFor(engine, 50ms);
+}
+
+// 17. Immediate BackendConnectionPool purging on health ejection
+TEST_F(HealthCheckerIntegrationTest, ImmediateConnectionPoolPurgeOnHealthEjection) {
+    L4ProxyServer::Config config;
+    config.listen_port = 0;
+    config.enable_connection_pooling = true;
+    config.connection_pool_config.max_idle_per_backend = 10;
+    config.connection_pool_config.max_total_idle = 20;
+    L4ProxyServer proxy(config);
+
+    auto b1 = std::make_shared<Backend>(50, "127.0.0.1", 9999, 1);
+    proxy.AddBackend(b1);
+
+    // Simulate idle connections in the pool for b1
+    int fake_sock1 = SocketUtils::CreateTcpSocket();
+    int fake_sock2 = SocketUtils::CreateTcpSocket();
+    ASSERT_GE(fake_sock1, 0);
+    ASSERT_GE(fake_sock2, 0);
+
+    ASSERT_TRUE(proxy.GetBackendPool()->Release(50, fake_sock1));
+    ASSERT_TRUE(proxy.GetBackendPool()->Release(50, fake_sock2));
+    EXPECT_EQ(proxy.GetBackendPool()->IdleCountForBackend(50), 2u);
+
+    // Trigger PurgeBackend (invoked upon health ejection)
+    proxy.PurgeBackend(50);
+
+    // Idle connections for backend 50 must immediately be 0
+    EXPECT_EQ(proxy.GetBackendPool()->IdleCountForBackend(50), 0u);
+    EXPECT_EQ(proxy.GetBackendPool()->TotalIdleCount(), 0u);
+}

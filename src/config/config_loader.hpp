@@ -72,6 +72,9 @@ struct HealthCheckConfig {
     std::chrono::milliseconds timeout{1000};
     uint32_t unhealthy_threshold{3};
     uint32_t healthy_threshold{2};
+    std::string type{"tcp"}; // "tcp" or "http"
+    std::string path{"/health"};
+    uint16_t expected_status{200}; // 200 or 0 for any 2xx
 };
 
 struct MetricsConfig {

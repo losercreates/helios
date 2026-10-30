@@ -465,6 +465,14 @@ bool ConfigLoader::FromYaml(const YamlNode& root, HeliosConfig& config, std::str
     if (!hc) hc = root.Find("health_checks");
     if (hc) {
         if (const auto* val = hc->Find("enabled")) config.health_check.enabled = val->AsBool(false);
+        if (const auto* val = hc->Find("type")) config.health_check.type = ToLower(val->AsString("tcp"));
+        if (const auto* val = hc->Find("path")) config.health_check.path = val->AsString("/health");
+        if (const auto* exp = hc->Find("expected_status")) {
+            config.health_check.expected_status = static_cast<uint16_t>(exp->AsUInt(200));
+        } else if (const auto* sc = hc->Find("status_code")) {
+            config.health_check.expected_status = static_cast<uint16_t>(sc->AsUInt(200));
+        }
+
         if (const auto* val = hc->Find("interval_ms")) {
             config.health_check.interval = std::chrono::milliseconds(val->AsUInt(5000));
         } else if (const auto* sec = hc->Find("interval_seconds")) {
@@ -803,6 +811,20 @@ bool ConfigLoader::Validate(const HeliosConfig& config, std::string& error_messa
         if (config.health_check.unhealthy_threshold == 0 || config.health_check.healthy_threshold == 0) {
             error_message = "health_check healthy and unhealthy thresholds must be >= 1";
             return false;
+        }
+        if (config.health_check.type != "tcp" && config.health_check.type != "http") {
+            error_message = "health_check.type must be either 'tcp' or 'http'";
+            return false;
+        }
+        if (config.health_check.type == "http") {
+            if (config.health_check.path.empty() || config.health_check.path.front() != '/') {
+                error_message = "health_check.path must start with '/' (got '" + config.health_check.path + "')";
+                return false;
+            }
+            if (config.health_check.expected_status != 0 && (config.health_check.expected_status < 100 || config.health_check.expected_status > 599)) {
+                error_message = "health_check.expected_status must be a valid HTTP status code between 100 and 599 (or 0 for any 2xx)";
+                return false;
+            }
         }
     }
 

@@ -131,12 +131,12 @@ public:
                                    const std::string& default_pool);
     [[nodiscard]] std::vector<std::shared_ptr<Backend>> GetAllBackends() const;
 
-    void SetHealthCheckManager(std::shared_ptr<HealthCheckManager> manager) noexcept {
-        health_check_manager_ = std::move(manager);
-    }
+    void SetHealthCheckManager(std::shared_ptr<HealthCheckManager> manager);
     [[nodiscard]] std::shared_ptr<HealthCheckManager> GetHealthCheckManager() const noexcept {
         return health_check_manager_;
     }
+    void PurgeBackendConnections(uint32_t backend_id);
+    [[nodiscard]] std::vector<BackendMetricInfo> GetBackendMetricInfos() const;
     void SetAccessLogger(std::shared_ptr<AccessLogger> logger);
     [[nodiscard]] std::shared_ptr<AccessLogger> GetAccessLogger() const noexcept { return access_logger_; }
     void SetMetricsCollector(std::shared_ptr<MetricsCollector> collector);

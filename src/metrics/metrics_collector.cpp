@@ -1,5 +1,6 @@
 #include "metrics_collector.hpp"
 #include "metrics/system_memory.hpp"
+#include "lb/backend.hpp"
 
 #include <algorithm>
 #include <iomanip>
@@ -67,8 +68,40 @@ void MetricsCollector::RegisterWorkerMetrics(std::shared_ptr<WorkerMetrics> metr
 }
 
 void MetricsCollector::Clear() noexcept {
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        workers_.clear();
+        backend_health_provider_ = nullptr;
+        manual_backend_health_.clear();
+    }
+    {
+        std::lock_guard<std::mutex> lock(probe_metrics_mutex_);
+        probe_metrics_.clear();
+    }
+}
+
+void MetricsCollector::SetBackendHealthProvider(BackendHealthProvider provider) {
     std::lock_guard<std::mutex> lock(mutex_);
-    workers_.clear();
+    backend_health_provider_ = std::move(provider);
+}
+
+void MetricsCollector::RecordBackendHealth(std::string endpoint, std::string pool, int status) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    manual_backend_health_[{std::move(endpoint), std::move(pool)}] = status;
+}
+
+void MetricsCollector::RecordHealthCheckProbe(const std::string& endpoint, const std::string& result) {
+    std::lock_guard<std::mutex> lock(probe_metrics_mutex_);
+    probe_metrics_[{endpoint, result}]++;
+}
+
+uint64_t MetricsCollector::GetHealthCheckProbesTotal(const std::string& endpoint, const std::string& result) const {
+    std::lock_guard<std::mutex> lock(probe_metrics_mutex_);
+    auto it = probe_metrics_.find({endpoint, result});
+    if (it != probe_metrics_.end()) {
+        return it->second;
+    }
+    return 0;
 }
 
 std::string MetricsCollector::RenderPrometheusText() const {
@@ -309,6 +342,53 @@ std::string MetricsCollector::RenderPrometheusText() const {
     for (const auto& w : snapshot) {
         ss << "helios_websocket_active_connections{worker=\"" << w->worker_id << "\"} "
            << w->websocket_active_connections.load(std::memory_order_relaxed) << "\n";
+    }
+    ss << "\n";
+
+    // 25. helios_backend_health_status
+    std::vector<BackendMetricInfo> backend_metrics;
+    std::map<std::pair<std::string, std::string>, int> manual_health;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (backend_health_provider_) {
+            backend_metrics = backend_health_provider_();
+        }
+        manual_health = manual_backend_health_;
+    }
+
+    if (!backend_metrics.empty() || !manual_health.empty()) {
+        ss << "# HELP helios_backend_health_status Health status of upstream backend endpoints (1=healthy, 0=unhealthy/recovering)\n";
+        ss << "# TYPE helios_backend_health_status gauge\n";
+        for (const auto& b : backend_metrics) {
+            int status = (b.backend && b.backend->GetHealthState() == HealthState::Healthy) ? 1 : 0;
+            ss << "helios_backend_health_status{endpoint=\"" << b.endpoint << "\",pool=\"" << b.pool << "\"} " << status << "\n";
+        }
+        for (const auto& [key, status] : manual_health) {
+            bool found = false;
+            for (const auto& b : backend_metrics) {
+                if (b.endpoint == key.first && b.pool == key.second) {
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) {
+                ss << "helios_backend_health_status{endpoint=\"" << key.first << "\",pool=\"" << key.second << "\"} " << status << "\n";
+            }
+        }
+        ss << "\n";
+    }
+
+    // 26. helios_health_check_probes_total
+    {
+        std::lock_guard<std::mutex> lock(probe_metrics_mutex_);
+        if (!probe_metrics_.empty()) {
+            ss << "# HELP helios_health_check_probes_total Total active health check probes executed by result outcome\n";
+            ss << "# TYPE helios_health_check_probes_total counter\n";
+            for (const auto& [key, count] : probe_metrics_) {
+                ss << "helios_health_check_probes_total{endpoint=\"" << key.first << "\",result=\"" << key.second << "\"} " << count << "\n";
+            }
+            ss << "\n";
+        }
     }
 
     return ss.str();

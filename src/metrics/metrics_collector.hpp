@@ -8,8 +8,21 @@
 #include <vector>
 #include <sstream>
 #include <iomanip>
+#include <functional>
+#include <map>
+#include <utility>
 
 namespace helios {
+
+class Backend;
+
+struct BackendMetricInfo {
+    std::string endpoint;
+    std::string pool;
+    std::shared_ptr<Backend> backend;
+};
+
+using BackendHealthProvider = std::function<std::vector<BackendMetricInfo>()>;
 
 // Thread-isolated latency histogram for a single worker
 class LatencyHistogram {
@@ -111,9 +124,19 @@ public:
     // Clear all registered worker metrics
     void Clear() noexcept;
 
+    // Upstream Backend Health & Probe Telemetry
+    void SetBackendHealthProvider(BackendHealthProvider provider);
+    void RecordBackendHealth(std::string endpoint, std::string pool, int status);
+    void RecordHealthCheckProbe(const std::string& endpoint, const std::string& result);
+    [[nodiscard]] uint64_t GetHealthCheckProbesTotal(const std::string& endpoint, const std::string& result) const;
+
 private:
     mutable std::mutex mutex_;
     std::vector<std::shared_ptr<WorkerMetrics>> workers_;
+    BackendHealthProvider backend_health_provider_;
+    std::map<std::pair<std::string, std::string>, int> manual_backend_health_;
+    mutable std::mutex probe_metrics_mutex_;
+    std::map<std::pair<std::string, std::string>, uint64_t> probe_metrics_;
 };
 
 } // namespace helios

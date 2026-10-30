@@ -68,6 +68,65 @@ void HealthCheckManager::PostTask(std::function<void()> task) {
     }
 }
 
+std::unique_ptr<HealthChecker> HealthCheckManager::CreateChecker(std::shared_ptr<Backend> backend) {
+    auto checker = std::make_unique<HealthChecker>(
+        engine_, backend, config_.interval, config_.timeout,
+        config_.type == "http" ? HealthCheckType::Http : HealthCheckType::Tcp,
+        config_.path, config_.expected_status);
+
+    if (on_backend_unhealthy_callback_) {
+        checker->SetOnBackendUnhealthyCallback(on_backend_unhealthy_callback_);
+    }
+
+    checker->SetProbeCallback([this](const std::string& endpoint, HealthCheckResult result) {
+        if (metrics_collector_) {
+            std::string res_str;
+            switch (result) {
+                case HealthCheckResult::Success: res_str = "success"; break;
+                case HealthCheckResult::ConnectionFailure: res_str = "failure"; break;
+                case HealthCheckResult::Timeout: res_str = "timeout"; break;
+                case HealthCheckResult::ProtocolFailure: res_str = "protocol_error"; break;
+            }
+            metrics_collector_->RecordHealthCheckProbe(endpoint, res_str);
+        }
+    });
+
+    return checker;
+}
+
+void HealthCheckManager::SetMetricsCollector(std::shared_ptr<MetricsCollector> collector) {
+    metrics_collector_ = std::move(collector);
+    if (!running_.load(std::memory_order_acquire)) return;
+    PostTask([this]() {
+        std::lock_guard<std::mutex> lock(checkers_mutex_);
+        for (auto& [_, checker] : checkers_) {
+            checker->SetProbeCallback([this](const std::string& endpoint, HealthCheckResult result) {
+                if (metrics_collector_) {
+                    std::string res_str;
+                    switch (result) {
+                        case HealthCheckResult::Success: res_str = "success"; break;
+                        case HealthCheckResult::ConnectionFailure: res_str = "failure"; break;
+                        case HealthCheckResult::Timeout: res_str = "timeout"; break;
+                        case HealthCheckResult::ProtocolFailure: res_str = "protocol_error"; break;
+                    }
+                    metrics_collector_->RecordHealthCheckProbe(endpoint, res_str);
+                }
+            });
+        }
+    });
+}
+
+void HealthCheckManager::SetOnBackendUnhealthyCallback(std::function<void(uint32_t)> cb) {
+    on_backend_unhealthy_callback_ = std::move(cb);
+    if (!running_.load(std::memory_order_acquire)) return;
+    PostTask([this]() {
+        std::lock_guard<std::mutex> lock(checkers_mutex_);
+        for (auto& [_, checker] : checkers_) {
+            checker->SetOnBackendUnhealthyCallback(on_backend_unhealthy_callback_);
+        }
+    });
+}
+
 void HealthCheckManager::RegisterBackend(std::shared_ptr<Backend> backend) {
     if (!backend) return;
     if (!running_.load(std::memory_order_acquire)) {
@@ -80,7 +139,7 @@ void HealthCheckManager::RegisterBackend(std::shared_ptr<Backend> backend) {
         registered_backends_.push_back(b);
         if (checkers_.find(b->GetId()) == checkers_.end()) {
             b->SetHealthThresholds(config_.unhealthy_threshold, config_.healthy_threshold);
-            auto checker = std::make_unique<HealthChecker>(engine_, b, config_.interval, config_.timeout);
+            auto checker = CreateChecker(b);
             checker->Start();
             checkers_.emplace(b->GetId(), std::move(checker));
         }
@@ -137,7 +196,7 @@ void HealthCheckManager::UpdateBackends(const std::vector<std::shared_ptr<Backen
             if (!b) continue;
             if (checkers_.find(b->GetId()) == checkers_.end()) {
                 b->SetHealthThresholds(config_.unhealthy_threshold, config_.healthy_threshold);
-                auto checker = std::make_unique<HealthChecker>(engine_, b, config_.interval, config_.timeout);
+                auto checker = CreateChecker(b);
                 checker->Start();
                 checkers_.emplace(b->GetId(), std::move(checker));
             }
@@ -159,7 +218,7 @@ void HealthCheckManager::SetConfig(HealthCheckConfig config) {
             auto it = checkers_.find(b->GetId());
             if (it != checkers_.end()) {
                 it->second->Stop();
-                it->second = std::make_unique<HealthChecker>(engine_, b, config_.interval, config_.timeout);
+                it->second = CreateChecker(b);
                 it->second->Start();
             }
         }
@@ -182,7 +241,7 @@ void HealthCheckManager::Run() {
         for (auto& b : registered_backends_) {
             if (!b) continue;
             b->SetHealthThresholds(config_.unhealthy_threshold, config_.healthy_threshold);
-            auto checker = std::make_unique<HealthChecker>(engine_, b, config_.interval, config_.timeout);
+            auto checker = CreateChecker(b);
             checker->Start();
             checkers_.emplace(b->GetId(), std::move(checker));
         }

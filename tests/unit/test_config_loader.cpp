@@ -434,3 +434,71 @@ security:
     EXPECT_NE(result.error_message.find("rate_per_sec must be > 0"), std::string::npos);
 }
 
+TEST(ConfigLoaderTest, HttpHealthCheckConfigParsing) {
+    const std::string yaml = R"(
+server:
+  host: "127.0.0.1"
+  port: 8080
+
+backend_pools:
+  - name: "pool1"
+    endpoints:
+      - host: "127.0.0.1"
+        port: 9001
+
+health_check:
+  enabled: true
+  type: "http"
+  path: "/v1/health"
+  expected_status: 204
+  interval_ms: 2500
+  timeout_ms: 600
+)";
+    auto result = ConfigLoader::LoadFromString(yaml);
+    ASSERT_TRUE(result.success) << result.error_message;
+    EXPECT_TRUE(result.config.health_check.enabled);
+    EXPECT_EQ(result.config.health_check.type, "http");
+    EXPECT_EQ(result.config.health_check.path, "/v1/health");
+    EXPECT_EQ(result.config.health_check.expected_status, 204);
+}
+
+TEST(ConfigLoaderTest, HttpHealthCheckValidation) {
+    // 1. Invalid path (missing leading /)
+    const std::string invalid_path_yaml = R"(
+server:
+  host: "127.0.0.1"
+  port: 8080
+backend_pools:
+  - name: "pool1"
+    endpoints:
+      - host: "127.0.0.1"
+        port: 9001
+health_check:
+  enabled: true
+  type: "http"
+  path: "health"
+)";
+    auto res1 = ConfigLoader::LoadFromString(invalid_path_yaml);
+    EXPECT_FALSE(res1.success);
+    EXPECT_NE(res1.error_message.find("path must start with '/'"), std::string::npos);
+
+    // 2. Invalid status code
+    const std::string invalid_status_yaml = R"(
+server:
+  host: "127.0.0.1"
+  port: 8080
+backend_pools:
+  - name: "pool1"
+    endpoints:
+      - host: "127.0.0.1"
+        port: 9001
+health_check:
+  enabled: true
+  type: "http"
+  expected_status: 999
+)";
+    auto res2 = ConfigLoader::LoadFromString(invalid_status_yaml);
+    EXPECT_FALSE(res2.success);
+    EXPECT_NE(res2.error_message.find("expected_status must be a valid HTTP status code"), std::string::npos);
+}
+

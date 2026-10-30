@@ -4,6 +4,7 @@
 #include "lb/backend.hpp"
 #include "lb/health_checker.hpp"
 #include "config/config_loader.hpp"
+#include "metrics/metrics_collector.hpp"
 #include <memory>
 #include <vector>
 #include <unordered_map>
@@ -33,6 +34,11 @@ public:
     void SetConfig(HealthCheckConfig config);
     [[nodiscard]] const HealthCheckConfig& GetConfig() const noexcept { return config_; }
 
+    void SetMetricsCollector(std::shared_ptr<MetricsCollector> collector);
+    [[nodiscard]] std::shared_ptr<MetricsCollector> GetMetricsCollector() const noexcept { return metrics_collector_; }
+
+    void SetOnBackendUnhealthyCallback(std::function<void(uint32_t)> cb);
+
     void RegisterBackend(std::shared_ptr<Backend> backend);
     void UnregisterBackend(uint32_t backend_id);
     void UpdateBackends(const std::vector<std::shared_ptr<Backend>>& backends);
@@ -43,10 +49,14 @@ public:
 private:
     void Run();
     void PostTask(std::function<void()> task);
+    std::unique_ptr<HealthChecker> CreateChecker(std::shared_ptr<Backend> backend);
 
     HealthCheckConfig config_;
     RingEngine engine_;
     int event_fd_{-1};
+
+    std::shared_ptr<MetricsCollector> metrics_collector_;
+    std::function<void(uint32_t)> on_backend_unhealthy_callback_;
 
     std::atomic<bool> running_{false};
     std::atomic<bool> stop_requested_{false};

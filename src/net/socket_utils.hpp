@@ -26,6 +26,9 @@ public:
     // Disable Nagle's algorithm (TCP_NODELAY)
     static bool SetTcpNoDelay(int fd) noexcept;
 
+    // Enable TCP Keep-Alive with idle, interval, and count probes
+    static bool SetTcpKeepAlive(int fd, int idle_sec = 60, int interval_sec = 10, int count = 3) noexcept;
+
     // Populate sockaddr_in structure from host and port
     static bool ParseSockAddr(const char* host, uint16_t port, sockaddr_in* addr) noexcept;
 

@@ -79,6 +79,29 @@ bool SocketUtils::SetTcpNoDelay(int fd) noexcept {
     return ::setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &opt, sizeof(opt)) == 0;
 }
 
+bool SocketUtils::SetTcpKeepAlive(int fd, int idle_sec, int interval_sec, int count) noexcept {
+    int opt = 1;
+    if (::setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &opt, sizeof(opt)) != 0) {
+        return false;
+    }
+#ifdef TCP_KEEPIDLE
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &idle_sec, sizeof(idle_sec)) != 0) {
+        return false;
+    }
+#endif
+#ifdef TCP_KEEPINTVL
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &interval_sec, sizeof(interval_sec)) != 0) {
+        return false;
+    }
+#endif
+#ifdef TCP_KEEPCNT
+    if (::setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &count, sizeof(count)) != 0) {
+        return false;
+    }
+#endif
+    return true;
+}
+
 bool SocketUtils::ParseSockAddr(const char* host, uint16_t port, sockaddr_in* addr) noexcept {
     if (!addr) return false;
     std::memset(addr, 0, sizeof(sockaddr_in));

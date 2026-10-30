@@ -195,7 +195,22 @@ std::string AccessLogger::FormatJson(const AccessLogEntry& entry) {
     out.append(std::to_string(entry.duration_us.count()));
     out.append(",\"upstream\":\"");
     out.append(entry.upstream_endpoint);
-    out.append("\"}\n");
+    out.append("\"");
+    if (entry.upstream_duration_us.count() > 0) {
+        out.append(",\"upstream_duration_us\":");
+        out.append(std::to_string(entry.upstream_duration_us.count()));
+    }
+    if (!entry.matched_pool.empty()) {
+        out.append(",\"pool\":\"");
+        out.append(entry.matched_pool);
+        out.append("\"");
+    }
+    if (!entry.request_id.empty()) {
+        out.append(",\"request_id\":\"");
+        out.append(entry.request_id);
+        out.append("\"");
+    }
+    out.append("}\n");
     return out;
 }
 

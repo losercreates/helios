@@ -101,10 +101,12 @@ void L4ProxyServer::AddNamedPool(std::string name, std::string algorithm, bool e
     if (enable_pool) {
         np.pool = std::make_unique<BackendConnectionPool>(pool_cfg);
     }
+    std::lock_guard lock(pools_mutex_);
     named_pools_.insert_or_assign(name, std::move(np));
 }
 
 void L4ProxyServer::AddBackendToNamedPool(const std::string& pool_name, std::string host, uint16_t port, uint32_t weight) {
+    std::lock_guard lock(pools_mutex_);
     auto it = named_pools_.find(pool_name);
     if (it != named_pools_.end() && it->second.lb) {
         it->second.lb->AddBackend(std::make_shared<Backend>(next_backend_id_++, std::move(host), port, weight));
@@ -113,6 +115,7 @@ void L4ProxyServer::AddBackendToNamedPool(const std::string& pool_name, std::str
 
 void L4ProxyServer::AddBackendToNamedPool(const std::string& pool_name, std::shared_ptr<Backend> backend) {
     if (!backend) return;
+    std::lock_guard lock(pools_mutex_);
     auto it = named_pools_.find(pool_name);
     if (it != named_pools_.end() && it->second.lb) {
         it->second.lb->AddBackend(std::move(backend));
@@ -128,6 +131,7 @@ void L4ProxyServer::ReloadNamedPoolsAndRoutes(
     const std::vector<L7RouteConfig>& routes,
     const std::string& default_pool) {
 
+    std::lock_guard lock(pools_mutex_);
     // 1. Update Routes and Default Pool
     router_.ClearRoutes();
     for (const auto& r : routes) {
@@ -259,6 +263,7 @@ void L4ProxyServer::SetDefaultPool(std::string pool_name) {
 }
 
 std::shared_ptr<Backend> L4ProxyServer::SelectBackendFromPool(const std::string& pool_name) {
+    std::lock_guard lock(pools_mutex_);
     auto it = named_pools_.find(pool_name);
     if (it != named_pools_.end() && it->second.lb) {
         return it->second.lb->SelectBackend();
@@ -270,11 +275,24 @@ std::shared_ptr<Backend> L4ProxyServer::SelectBackendFromPool(const std::string&
 }
 
 BackendConnectionPool* L4ProxyServer::GetPoolForName(const std::string& pool_name) noexcept {
+    std::lock_guard lock(pools_mutex_);
     auto it = named_pools_.find(pool_name);
     if (it != named_pools_.end()) {
         return it->second.pool.get();
     }
     return backend_pool_.get();
+}
+
+void L4ProxyServer::PurgeBackend(uint32_t backend_id) {
+    if (backend_pool_) {
+        backend_pool_->Purge(backend_id);
+    }
+    std::lock_guard lock(pools_mutex_);
+    for (auto& [_, np] : named_pools_) {
+        if (np.pool) {
+            np.pool->Purge(backend_id);
+        }
+    }
 }
 
 void L4ProxyServer::EnableConnectionPooling(BackendConnectionPoolConfig config) {
@@ -477,9 +495,14 @@ int L4ProxyServer::RunOnce(std::chrono::milliseconds timeout) {
         metrics_->buffer_pool_utilization.store(buffer_pool_.UtilizationRatio(), std::memory_order_relaxed);
         metrics_->buffer_pool_bytes_allocated.store(buffer_pool_.TotalAllocatedBytes(), std::memory_order_relaxed);
         metrics_->buffer_pool_bytes_used.store(buffer_pool_.ActiveAllocatedBytes(), std::memory_order_relaxed);
-        if (backend_pool_) {
-            metrics_->backend_pool_idle_connections.store(backend_pool_->TotalIdleCount(), std::memory_order_relaxed);
+        size_t total_idle = backend_pool_ ? backend_pool_->TotalIdleCount() : 0;
+        {
+            std::lock_guard lock(pools_mutex_);
+            for (const auto& [_, np] : named_pools_) {
+                if (np.pool) total_idle += np.pool->TotalIdleCount();
+            }
         }
+        metrics_->backend_pool_idle_connections.store(total_idle, std::memory_order_relaxed);
     }
 
     return static_cast<int>(total_reaped) + submitted;
@@ -516,6 +539,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
     int client_fd = event.result;
     total_accepted_connections_.fetch_add(1, std::memory_order_relaxed);
     SocketUtils::SetTcpNoDelay(client_fd);
+    SocketUtils::SetTcpKeepAlive(client_fd);
 
     // 1. Client IP Access Control List (ACL) Check
     std::shared_ptr<IpAcl> current_acl;
@@ -659,6 +683,7 @@ void L4ProxyServer::HandleAcceptCompletion(const CompletionEvent& event) {
             return;
         }
         SocketUtils::SetTcpNoDelay(backend_fd);
+        SocketUtils::SetTcpKeepAlive(backend_fd);
         if (metrics_) {
             metrics_->backend_pool_misses_total.fetch_add(1, std::memory_order_relaxed);
         }
@@ -787,6 +812,7 @@ void L4ProxyServer::HandleConnectCompletion(ConnectionStateData& data, const Com
     conn->TransitionTo(ConnectionState::Established);
 
     if (data.backend_write_ctx.buf) {
+        data.backend_request_time = std::chrono::steady_clock::now();
         Buffer* bbuf = data.backend_write_ctx.buf;
         conn->SetBackendReusable(false);
         engine_.PrepWrite(conn->GetBackendFd(), bbuf->ReadPtr(), bbuf->ReadableBytes(), 0, &data.backend_write_ctx);
@@ -1075,10 +1101,18 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                     data.is_websocket = true;
                 }
 
+                auto req_id_opt = req.GetHeader("x-request-id");
+                if (req_id_opt) {
+                    data.request_id = std::string(*req_id_opt);
+                } else if (match_opt->inject_headers) {
+                    data.request_id = HttpRewriter::GenerateRequestId();
+                }
+
                 HeaderInjectionOptions inj_opts;
                 inj_opts.client_ip = data.client_ip;
                 inj_opts.client_proto = data.tls_stream ? "https" : "http";
                 inj_opts.host = std::string(host);
+                inj_opts.request_id = data.request_id;
                 if (match_opt->strip_prefix) {
                     inj_opts.rewritten_path = match_opt->rewritten_path;
                 }
@@ -1156,6 +1190,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                         return;
                     }
                     SocketUtils::SetTcpNoDelay(backend_fd);
+        SocketUtils::SetTcpKeepAlive(backend_fd);
                     if (metrics_) {
                         metrics_->backend_pool_misses_total.fetch_add(1, std::memory_order_relaxed);
                     }
@@ -1184,6 +1219,7 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                 data.backend_write_ctx.buf = out_buf;
 
                 if (is_pooled) {
+                    data.backend_request_time = std::chrono::steady_clock::now();
                     conn->TransitionTo(ConnectionState::Established);
                     conn->SetBackendReusable(false);
                     engine_.PrepWrite(conn->GetBackendFd(), out_buf->ReadPtr(), out_buf->ReadableBytes(), 0, &data.backend_write_ctx);
@@ -1278,6 +1314,9 @@ void L4ProxyServer::HandleClientReadCompletion(ConnectionStateData& data, const 
                 buf->AdvanceWrite(static_cast<size_t>(event.result));
             }
 
+            if (data.backend_request_time.time_since_epoch().count() == 0) {
+                data.backend_request_time = std::chrono::steady_clock::now();
+            }
             data.backend_write_ctx.buf = buf;
             conn->SetBackendReusable(false);
             engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);
@@ -1352,6 +1391,9 @@ void L4ProxyServer::HandleBackendWriteCompletion(ConnectionStateData& data, cons
                 TryStartClientRead(data);
             }
         } else if (event.result == -EAGAIN || event.result == -EWOULDBLOCK) {
+            if (data.backend_request_time.time_since_epoch().count() == 0) {
+                data.backend_request_time = std::chrono::steady_clock::now();
+            }
             data.backend_write_ctx.buf = buf;
             engine_.PrepWrite(conn->GetBackendFd(), buf->ReadPtr(), buf->ReadableBytes(), 0, &data.backend_write_ctx);
             conn->IncrementPendingCqe();
@@ -1407,6 +1449,10 @@ void L4ProxyServer::HandleBackendReadCompletion(ConnectionStateData& data, const
             size_t payload_len = static_cast<size_t>(event.result);
             if (!data.parsed_response) {
                 data.parsed_response = true;
+                if (data.backend_request_time.time_since_epoch().count() > 0) {
+                    auto now = std::chrono::steady_clock::now();
+                    data.upstream_duration_us = std::chrono::duration_cast<std::chrono::microseconds>(now - data.backend_request_time);
+                }
                 std::string_view resp(reinterpret_cast<const char*>(buf->data), static_cast<size_t>(event.result));
                 if (resp.rfind("HTTP/", 0) == 0) {
                     auto sp1 = resp.find(' ');

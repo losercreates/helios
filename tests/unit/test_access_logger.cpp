@@ -42,6 +42,18 @@ TEST(AccessLoggerTest, FormatJsonStructure) {
     EXPECT_EQ(json.back(), '\n');
 }
 
+TEST(AccessLoggerTest, FormatJsonWithUpstreamDurationPoolAndRequestId) {
+    auto entry = CreateSampleEntry();
+    entry.upstream_duration_us = std::chrono::microseconds(850);
+    entry.matched_pool = "api_cluster";
+    entry.request_id = "abc123def456";
+
+    std::string json = AccessLogger::FormatJson(entry);
+    EXPECT_NE(json.find("\"upstream_duration_us\":850"), std::string::npos);
+    EXPECT_NE(json.find("\"pool\":\"api_cluster\""), std::string::npos);
+    EXPECT_NE(json.find("\"request_id\":\"abc123def456\""), std::string::npos);
+}
+
 TEST(AccessLoggerTest, FormatCombinedStructure) {
     auto entry = CreateSampleEntry();
     std::string combined = AccessLogger::FormatCombined(entry);
